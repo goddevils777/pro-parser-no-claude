@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Truth Social Parser</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>🔥 Truth Social Parser</h1>
+        
+        <div class="status-panel">
+            <div class="status-item">
+                <span class="label">Status:</span>
+                <span id="parser-status" class="status <%= stats.isRunning ? 'running' : 'stopped' %>">
+                    <%= stats.isRunning ? 'Running' : 'Stopped' %>
+                </span>
+            </div>
+            <div class="status-item">
+                <span class="label">Total Posts:</span>
+                <span id="total-posts"><%= stats.totalPosts %></span>
+            </div>
+            <div class="status-item">
+                <span class="label">Errors:</span>
+                <span id="total-errors"><%= stats.errors %></span>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button id="start-btn" class="btn btn-success">Start Parser</button>
+            <button id="stop-btn" class="btn btn-danger">Stop Parser</button>
+        </div>
+
+        <div class="section">
+            <h2>📋 Profiles to Monitor</h2>
+            <div class="add-profile">
+                <input type="text" id="username-input" placeholder="Username (e.g., realDonaldTrump)">
+                <input type="text" id="keywords-input" placeholder="Keywords (comma separated)">
+                <button id="add-profile-btn" class="btn btn-primary">Add Profile</button>
+            </div>
+            <div id="profiles-list" class="profiles-list"></div>
+        </div>
+
+        <div class="section">
+            <h2>📊 Statistics</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-number" id="profiles-count">0</div>
+                    <div class="stat-label">Profiles Monitored</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" id="posts-per-hour">0</div>
+                    <div class="stat-label">Posts/Hour</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" id="success-rate">0%</div>
+                    <div class="stat-label">Success Rate</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>📝 Recent Posts</h2>
+            <div id="recent-posts" class="posts-container"></div>
+        </div>
+
+        <div class="section">
+            <h2>🔧 Live Logs</h2>
+            <div id="logs-container" class="logs-container"></div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/script.js"></script>
+</body>
+</html>

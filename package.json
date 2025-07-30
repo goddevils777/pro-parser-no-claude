@@ -1,0 +1,36 @@
+{
+  "name": "truth-social-parser",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.11.0",
+    "chrome-launcher": "^1.2.0",
+    "cloudscraper": "^4.6.0",
+    "dotenv": "^17.2.1",
+    "ejs": "^3.1.10",
+    "express": "^5.1.0",
+    "fs-extra": "^11.3.0",
+    "https-proxy-agent": "^7.0.6",
+    "multer": "^2.0.2",
+    "node-telegram-bot-api": "^0.66.0",
+    "playwright": "^1.54.1",
+    "playwright-extra": "^4.3.6",
+    "playwright-extra-plugin-stealth": "^0.0.1",
+    "puppeteer": "^24.15.0",
+    "puppeteer-cluster": "^0.24.0",
+    "socket.io": "^4.8.1",
+    "socks-proxy-agent": "^8.0.5",
+    "winston": "^3.17.0",
+    "ws": "^8.18.3"
+  }
+}
