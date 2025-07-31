@@ -137,26 +137,31 @@ global.sendStatsUpdate = (data) => {
 };
 
 async function startMonitoring() {
-    const checkInterval = 5000; // 5 секунд для демо
-    
-    while (parserStats.isRunning && parserInstance) {
-        try {
-            const profiles = await fs.readJson('./data/profiles.json').catch(() => []);
-            
-            for (const profile of profiles) {
-                const post = await parserInstance.parseLatestPost(profile.username);
-                
-                if (post && shouldNotify(post, profile.keywords)) {
-                    // Сохраняем пост и отправляем уведомления
-                    // Логика уже встроена в parseLatestPost
-                }
-            }
-            
-            await new Promise(resolve => setTimeout(resolve, checkInterval));
-        } catch (error) {
-            console.error('Monitoring error:', error);
-            await new Promise(resolve => setTimeout(resolve, checkInterval));
+    try {
+        const profiles = await fs.readJson('./data/profiles.json').catch(() => []);
+        
+        if (profiles.length === 0) {
+            io.emit('log', {
+                level: 'warning',
+                message: 'No profiles to monitor. Add profiles first.'
+            });
+            return;
         }
+        
+        // Используем новую параллельную логику
+        await parserInstance.startParallelParsing(profiles);
+        
+        io.emit('log', {
+            level: 'success',
+            message: `Started parallel monitoring of ${profiles.length} profiles`
+        });
+        
+    } catch (error) {
+        console.error('Monitoring error:', error);
+        io.emit('log', {
+            level: 'error',
+            message: 'Failed to start monitoring: ' + error.message
+        });
     }
 }
 

@@ -5,7 +5,6 @@ class ProxyManager {
     constructor(proxyFile) {
         this.proxies = [];
         this.currentIndex = 0;
-        this.failedProxies = new Set();
         this.loadProxies(proxyFile);
     }
 
@@ -18,40 +17,30 @@ class ProxyManager {
             
             logger.info(`Loaded ${this.proxies.length} proxies`);
         } catch (error) {
-            logger.error('Failed to load proxies:', error);
+            logger.error('Failed to load proxies:', error.message);
         }
     }
 
     getNextProxy() {
         if (this.proxies.length === 0) return null;
         
-        let attempts = 0;
-        while (attempts < this.proxies.length) {
-            const proxy = this.proxies[this.currentIndex];
-            this.currentIndex = (this.currentIndex + 1) % this.proxies.length;
-            
-            if (!this.failedProxies.has(proxy)) {
-                return proxy;
-            }
-            attempts++;
-        }
-        
-        // Если все прокси провалились, сбрасываем failed список
-        this.failedProxies.clear();
-        return this.proxies[0];
+        // Берем случайный прокси вместо по очереди
+        const randomIndex = Math.floor(Math.random() * this.proxies.length);
+        return this.proxies[randomIndex];
     }
 
-    markFailed(proxy) {
-        this.failedProxies.add(proxy);
-        logger.warn(`Proxy marked as failed: ${proxy.split('@')[1]}`);
-    }
-
-    getWorkingProxies(count = 20) {
-        const result = [];
-        for (let i = 0; i < count && i < this.proxies.length; i++) {
-            result.push(this.getNextProxy());
+    parseProxy(proxyUrl) {
+        try {
+            const url = new URL(proxyUrl);
+            return {
+                server: `${url.hostname}:${url.port}`,
+                username: url.username,
+                password: url.password
+            };
+        } catch (error) {
+            logger.error('Failed to parse proxy:', error.message);
+            return null;
         }
-        return result;
     }
 }
 
