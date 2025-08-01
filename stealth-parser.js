@@ -187,37 +187,29 @@ if (global.sendLogUpdate) {
 }
 
 const post = await page.evaluate(() => {
-    // Ищем посты по актуальным селекторам Truth Social
-    const selectors = [
-        '[data-testid="status"]',
-        'div[data-id]',
-        'p[data-markup="true"]'
-    ];
+    // Сначала посмотрим что есть на странице
+    console.log('Page title:', document.title);
+    console.log('Body contains:', document.body.textContent.substring(0, 200));
     
-    let postElement = null;
+    // Ищем все возможные элементы с текстом
+    const allElements = document.querySelectorAll('*');
+    const textElements = [];
     
-    for (const selector of selectors) {
-        const elements = document.querySelectorAll(selector);
-        if (elements.length > 0) {
-            postElement = elements[0];
-            break;
+    allElements.forEach(el => {
+        const text = el.textContent?.trim();
+        if (text && text.length > 10 && text.length < 500) {
+            textElements.push({
+                tag: el.tagName,
+                text: text.substring(0, 100),
+                className: el.className,
+                id: el.id
+            });
         }
-    }
+    });
     
-    if (!postElement) return null;
+    console.log('Found text elements:', textElements.slice(0, 5));
     
-    // Извлекаем текст поста
-    const contentElement = postElement.querySelector('p[data-markup="true"]') || postElement;
-    const content = contentElement.textContent?.trim();
-    
-    if (!content || content.length < 1) return null;
-    
-    return {
-        id: `${Date.now()}_${Math.random()}`,
-        content: content.substring(0, 400),
-        timestamp: new Date().toISOString(),
-        url: window.location.href
-    };
+    return null; // Пока возвращаем null для отладки
 });
 
 // ДОБАВИТЬ ЭТОТ БЛОК:
