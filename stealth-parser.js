@@ -176,9 +176,19 @@ try {
     // Добавляем авторизацию
     await page.setExtraHTTPHeaders({
         'Authorization': `Bearer ${this.token}`,
-        'X-Requested-With': 'XMLHttpRequest'
+        'X-Requested-With': 'XMLHttpRequest',
+        'Accept': 'application/json, text/plain, */*',
+        'Content-Type': 'application/json',
+        'Referer': 'https://truthsocial.com/',
+        'Origin': 'https://truthsocial.com'
     });
     logger.info(`🔑 @${username}: Authorization token added`);
+
+    // Добавляем токен в localStorage для веб-интерфейса
+    await page.addInitScript(() => {
+        localStorage.setItem('access_token', 'BlChfq4xZWeEvTEPFYD1EmeY4iYLsitAiNh3VYP8g1o');
+        localStorage.setItem('token_type', 'Bearer');
+    });
     
 
     logger.info(`🚫 @${username}: Heavy resources blocked, JS allowed`);
@@ -268,51 +278,84 @@ try {
 }
 
 const post = await page.evaluate(() => {
-    const timeElements = document.querySelectorAll('time');
-    const foundTimeData = [];
-    
-    timeElements.forEach((timeEl, index) => {
-        const timeTitle = timeEl.getAttribute('title');
-        const timeText = timeEl.textContent?.trim();
-        
-        // Смотрим что идёт после time элемента
-        let nextElement = timeEl.nextElementSibling;
-        let nextTexts = [];
-        
-        for (let j = 0; j < 3; j++) {
-            if (nextElement) {
-                const text = nextElement.textContent?.trim();
-                if (text && text.length > 5) {
-                    nextTexts.push(text.substring(0, 100));
-                }
-                nextElement = nextElement.nextElementSibling;
-            }
-        }
-        
-        foundTimeData.push({
-            index: index,
-            title: timeTitle,
-            text: timeText,
-            nextTexts: nextTexts
-        });
-    });
-    
-    return {
-        totalTimeElements: timeElements.length,
-        timeData: foundTimeData
-    };
-});
 
-logger.info(`🕐 TIME @${username}: Found ${post.totalTimeElements} time elements`);
-post.timeData.forEach(time => {
-    logger.info(`⏰ Time${time.index}: "${time.text}" (${time.title}) -> next: ${JSON.stringify(time.nextTexts)}`);
-});
+    // Отладочная информация
+logger.info(`🔍 @${username}: Post extraction result: ${post ? 'FOUND' : 'NOT FOUND'}`);
 
 if (post) {
-    logger.info(`🎯 FOUND POST BY TIME @${username}: ${post.content.substring(0, 100)}`);
+    logger.info(`📝 @${username}: Content preview: "${post.content.substring(0, 100)}..."`);
+    logger.info(`🕐 @${username}: Timestamp: ${post.timestamp}`);
 } else {
-    logger.info(`📭 No posts found by time @${username}`);
+    // Если пост не найден, проверяем что на странице
+    const pageInfo = await page.evaluate(() => {
+        return {
+            title: document.title,
+            articlesCount: document.querySelectorAll('article').length,
+            postsCount: document.querySelectorAll('[role="article"]').length,
+            hasAuthToken: !!localStorage.getItem('access_token'),
+            bodyText: document.body.textContent.substring(0, 200)
+        };
+    });
+    
+    logger.info(`🔍 @${username}: Page info: ${JSON.stringify(pageInfo)}`);
 }
+    // Функция проверки на спонсорский пост
+    function isSponsoredPost(element) {
+        const text = element.textContent?.toLowerCase() || '';
+        const html = element.innerHTML?.toLowerCase() || '';
+        
+        return text.includes('sponsored') || 
+               text.includes('promoted') || 
+               text.includes('advertisement') ||
+               html.includes('sponsored') ||
+               element.querySelector('[data-testid="socialContext"]')?.textContent?.includes('Promoted');
+    }
+    
+    // Ищем все статьи/посты на странице
+    const articles = document.querySelectorAll('article, [data-testid="tweet"], .status, .post-content');
+    
+    if (articles.length === 0) {
+        // Если нет article элементов, ищем по структуре Truth Social
+        const postElements = document.querySelectorAll('div[role="article"], div[data-focusable="true"]');
+        
+        for (const element of postElements) {
+            if (isSponsoredPost(element)) continue; // Пропускаем спонсорские
+            
+            const textContent = element.textContent?.trim();
+            const timeElement = element.querySelector('time');
+            
+            if (textContent && textContent.length > 10 && timeElement) {
+                return {
+                    id: Date.now().toString(),
+                    content: textContent.substring(0, 500),
+                    timestamp: timeElement.getAttribute('datetime') || new Date().toISOString(),
+                    url: window.location.href
+                };
+            }
+        }
+    }
+    
+    // Обработка обычных article элементов
+    for (const article of articles) {
+        if (isSponsoredPost(article)) continue; // Пропускаем спонсорские
+        
+        const textContent = article.textContent?.trim();
+        const timeElement = article.querySelector('time');
+        
+        if (textContent && textContent.length > 10 && timeElement) {
+            return {
+                id: Date.now().toString(),
+                content: textContent.substring(0, 500),
+                timestamp: timeElement.getAttribute('datetime') || new Date().toISOString(),
+                url: window.location.href
+            };
+        }
+    }
+    
+    return null;
+});
+
+
 
 
 
