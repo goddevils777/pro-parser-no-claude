@@ -40,13 +40,24 @@ usernameInput.addEventListener('keypress', (e) => {
 // Функции управления парсером
 async function startParser() {
     try {
+        // Сразу отключаем кнопку
+        startBtn.disabled = true;
+        startBtn.textContent = 'Starting...';
+        
         const response = await fetch('/api/parser/start', { method: 'POST' });
         const result = await response.json();
         
         if (result.success) {
             addLogToUI({ level: 'success', message: 'Parser started successfully' });
+        } else {
+            // При ошибке возвращаем кнопку обратно
+            startBtn.disabled = false;
+            startBtn.textContent = 'Start Parser';
         }
     } catch (error) {
+        // При ошибке возвращаем кнопку обратно
+        startBtn.disabled = false;
+        startBtn.textContent = 'Start Parser';
         addLogToUI({ level: 'error', message: 'Failed to start parser: ' + error.message });
     }
 }
@@ -142,11 +153,21 @@ function updateStats(stats) {
     totalPosts.textContent = stats.totalPosts || 0;
     totalErrors.textContent = stats.errors || 0;
     
-    // Расчет posts per hour
+    // Управление кнопками
+    if (stats.isRunning) {
+        startBtn.disabled = true;
+        startBtn.textContent = 'Parser Running';
+        stopBtn.disabled = false;
+    } else {
+        startBtn.disabled = false;
+        startBtn.textContent = 'Start Parser';
+        stopBtn.disabled = true;
+    }
+    
+    // Остальные расчеты без изменений
     const postsPerHourValue = stats.totalPosts > 0 ? Math.round(stats.totalPosts * (3600000 / (Date.now() - (stats.startTime || Date.now())))) : 0;
     postsPerHour.textContent = postsPerHourValue;
     
-    // Расчет success rate
     const total = (stats.totalPosts || 0) + (stats.errors || 0);
     const successRateValue = total > 0 ? Math.round(((stats.totalPosts || 0) / total) * 100) : 100;
     successRate.textContent = successRateValue + '%';
@@ -187,6 +208,40 @@ function addLogToUI(log) {
     logsContainer.scrollTop = 0;
 }
 
+function updatePerformanceMetrics(data) {
+    // Обновляем среднее время парсинга для каждого пользователя
+    const avgTime = document.getElementById(`avg-time-${data.username}`) || createUserMetric(data.username);
+    
+    // Вычисляем среднее время (простой способ)
+    const currentAvg = parseInt(avgTime.textContent) || 0;
+    const newAvg = currentAvg === 0 ? data.parseTime : Math.round((currentAvg + data.parseTime) / 2);
+    
+    avgTime.textContent = `${newAvg}ms`;
+    avgTime.className = newAvg < 1000 ? 'metric-good' : newAvg < 3000 ? 'metric-ok' : 'metric-slow';
+}
+
+function createUserMetric(username) {
+    const recentPosts = document.getElementById('recent-posts');
+    const metricDiv = document.createElement('div');
+    metricDiv.innerHTML = `
+        <div class="user-metric">
+            <span>@${username} avg time:</span>
+            <span id="avg-time-${username}" class="metric-value">0ms</span>
+        </div>
+    `;
+    recentPosts.appendChild(metricDiv);
+    return document.getElementById(`avg-time-${username}`);
+}
+
+// Принудительно обновляем статус при подключении
+socket.on('connect', () => {
+    addLogToUI({ level: 'info', message: 'Connected to server' });
+});
+
+socket.on('performance', (data) => {
+    updatePerformanceMetrics(data);
+});
+
 // Инициализация
 window.addEventListener('load', () => {
     loadProfiles();
@@ -195,3 +250,5 @@ window.addEventListener('load', () => {
 
 // Делаем функции глобальными для HTML onclick
 window.deleteProfile = deleteProfile;
+
+

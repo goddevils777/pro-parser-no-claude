@@ -148,19 +148,23 @@ async function startMonitoring() {
             return;
         }
         
+        
+        parserStats.isRunning = true;
+        io.emit('stats', parserStats);
+        
         // Используем новую параллельную логику
         await parserInstance.startParallelParsing(profiles);
         
         io.emit('log', {
             level: 'success',
-            message: `Started parallel monitoring of ${profiles.length} profiles`
+            message: `✅ All sessions created. Monitoring ${profiles.length} profiles every 1.5s`
         });
         
     } catch (error) {
         console.error('Monitoring error:', error);
         io.emit('log', {
-            level: 'error',
-            message: 'Failed to start monitoring: ' + error.message
+            level: 'warning',
+            message: 'Failed to start monitoring. Check console for details.'
         });
     }
 }
