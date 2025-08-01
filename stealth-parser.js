@@ -10,594 +10,262 @@ class StealthParser {
         this.sessions = new Map();
         this.token = 'BlChfq4xZWeEvTEPFYD1EmeY4iYLsitAiNh3VYP8g1o';
         this.lastPostIds = new Map();
-        this.currentSessionIndex = 0; // Вернули обратно
         this.proxyManager = new ProxyManager('./port_list.txt');
         
-        // Новая система привязки IP к пользователям
-        this.userProxyMap = new Map(); // username -> proxy
-        this.userSessionMap = new Map(); // username -> session data
-        this.activeIntervals = new Map(); // username -> interval ID
-        this.failedAttempts = new Map(); // username -> attempts count
-
-        this.browserPools = new Map(); // username -> массив браузеров
-        this.poolSize = 3; // 3 браузера на пользователя
+        this.userProxyMap = new Map();
+        this.userSessionMap = new Map();
+        this.activeIntervals = new Map();
+        this.failedAttempts = new Map();
+        this.browserPools = new Map();
+        this.poolSize = 1; // Уменьшаем до 1 браузера на пользователя
     }
 
     async init() {
-        await this.createSessions();
-        logger.info('Stealth Parser initialized with API sessions');
+        logger.info('Stealth Parser initialized');
     }
 
-async createSessions() {
-  logger.info('Session system ready for parallel parsing');
-}
-
-async createUserSession(username) {
-    let attempts = 0;
-    const maxAttempts = 15; // Увеличили до 15 попыток
-    
-    while (attempts < maxAttempts) {
-        try {
-            const proxyUrl = this.proxyManager.getNextProxy();
-            const proxy = proxyUrl ? this.proxyManager.parseProxy(proxyUrl) : null;
-            
-            logger.info(`Creating session for @${username} (attempt ${attempts + 1}/${maxAttempts}) with proxy ${proxy?.server || 'direct'}`);
-            
-            const browser = await chromium.launch({
-                headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox']
-            });
-
-            const context = await browser.newContext({
-                userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                viewport: { width: 1280, height: 720 },
-                proxy: proxy
-            });
-
-            const page = await context.newPage();
-            
-            // Уменьшили timeout для быстрой проверки
-            await page.goto('https://truthsocial.com', { 
-                waitUntil: 'domcontentloaded',
-                timeout: 10000 
-            });
-
-            // Быстрая проверка на блокировку
-            const isBlocked = await page.evaluate(() => {
-                return document.body.textContent.includes('you have been blocked') || 
-                       document.body.textContent.includes('Unable to access') ||
-                       document.body.textContent.includes('Access denied') ||
-                       document.title.includes('blocked');
-            });
-
-            if (isBlocked) {
-                await browser.close();
-                logger.warn(`IP ${proxy?.server} is blocked, trying another...`);
-                attempts++;
-                continue;
-            }
-
-            // Уменьшили timeout для Cloudflare
+    async createUserSession(username) {
+        let attempts = 0;
+        const maxAttempts = 5;
+        
+        while (attempts < maxAttempts) {
             try {
-                await page.waitForFunction(
-                    () => !document.title.includes('Just a moment') && 
-                          !document.body.innerHTML.includes('Checking your browser'),
-                    { timeout: 10000 }
-                );
-            } catch (cfError) {
-                // Если Cloudflare не прошли за 10 сек - пробуем следующий IP
+                const proxyUrl = this.proxyManager.getNextProxy();
+                const proxy = proxyUrl ? this.proxyManager.parseProxy(proxyUrl) : null;
+                
+                logger.info(`Creating session for @${username} (attempt ${attempts + 1})`);
+                
+                const browser = await chromium.launch({
+                    headless: true,
+                    args: ['--no-sandbox', '--disable-setuid-sandbox']
+                });
+
+                const context = await browser.newContext({
+                    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    viewport: { width: 1280, height: 720 },
+                    proxy: proxy
+                });
+
+                const page = await context.newPage();
+                
+                await page.goto('https://truthsocial.com', { 
+                    waitUntil: 'domcontentloaded',
+                    timeout: 10000 
+                });
+
+                const cookies = await context.cookies();
+                
+                this.userSessionMap.set(username, {
+                    cookies: cookies,
+                    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    proxy: proxy,
+                    isValid: true,
+                    createdAt: Date.now()
+                });
+
                 await browser.close();
-                logger.warn(`Cloudflare timeout on ${proxy?.server}, trying another...`);
-                attempts++;
-                continue;
-            }
-
-            const cookies = await context.cookies();
-            const userAgent = await page.evaluate(() => navigator.userAgent);
-            
-            this.userProxyMap.set(username, proxyUrl);
-            
-            this.userSessionMap.set(username, {
-                cookies: cookies,
-                userAgent: userAgent,
-                proxy: proxy,
-                isValid: true,
-                createdAt: Date.now()
-            });
-
-            await browser.close();
-            logger.info(`✅ Session created for @${username} with ${cookies.length} cookies (attempt ${attempts + 1})`);
-            return;
-            
-        } catch (error) {
-            attempts++;
-            logger.warn(`Attempt ${attempts} failed for @${username}: ${error.message.substring(0, 100)}`);
-            
-            if (attempts >= maxAttempts) {
-                logger.error(`❌ Failed to create session for @${username} after ${maxAttempts} attempts`);
-                this.failedAttempts.set(username, 10);
+                logger.info(`✅ Session created for @${username}`);
                 return;
+                
+            } catch (error) {
+                attempts++;
+                logger.warn(`Attempt ${attempts} failed for @${username}: ${error.message}`);
+                
+                if (attempts >= maxAttempts) {
+                    logger.error(`❌ Failed to create session for @${username}`);
+                    return;
+                }
             }
         }
     }
-}
+
 
 async parseUserWithStableIP(username, keywords) {
-    const userSession = this.userSessionMap.get(username);
-    
-    if (!userSession || !userSession.isValid) {
-        const skipCount = this.skipCounts?.get(username) || 0;
-        if (skipCount % 10 === 0) {
-            logger.info(`📋 Waiting for valid session: @${username}`);
-        }
-        this.skipCounts = this.skipCounts || new Map();
-        this.skipCounts.set(username, skipCount + 1);
-        return null;
-    }
-    
-    // Получаем свободный браузер из пула
     const browserPool = this.browserPools.get(username);
-    if (!browserPool) {
+    const freeBrowser = browserPool?.find(b => !b.isBusy);
+    if (!freeBrowser) return null;
+    
+    freeBrowser.isBusy = true;
+    const startTime = Date.now();
+    
+    try {
+        logger.info(`🚀 @${username}: Quick parse starting...`);
+        
+        const page = await freeBrowser.context.newPage();
+        
+        // Простая загрузка без блокировок
+        await page.goto(`https://truthsocial.com/@${username}`, { timeout: 8000 });
+        
+        // Быстрый поиск
+        const post = await page.evaluate((targetUsername) => {
+    console.log(`=== ПОИСК ПОСТОВ @${targetUsername} ===`);
+    
+    const statusWrappers = document.querySelectorAll('.status__wrapper');
+    console.log(`Найдено status__wrapper: ${statusWrappers.length}`);
+    
+    if (statusWrappers.length === 0) {
+        console.log(`❌ Нет status__wrapper элементов`);
         return null;
     }
     
-    const freeBrowser = browserPool.find(b => !b.isBusy);
-    if (!freeBrowser) {
-        if (global.io) {
-            global.io.emit('log', {
-                level: 'warning',
-                message: `⚠️ @${username} all browsers busy, skipping...`
-            });
+    for (let i = 0; i < statusWrappers.length; i++) {
+        const wrapper = statusWrappers[i];
+        const text = wrapper.textContent?.trim();
+        
+        console.log(`\n--- WRAPPER ${i+1} ---`);
+        console.log(`Текст: "${text?.substring(0, 100)}"`);
+        console.log(`Длина: ${text?.length || 0}`);
+        console.log(`Содержит Sponsored: ${text?.includes('Sponsored')}`);
+        console.log(`Содержит автора: ${text?.includes(targetUsername)}`);
+        
+        if (!text || text.length < 30) {
+            console.log(`❌ Слишком короткий`);
+            continue;
         }
-        return null;
+        
+        if (text.includes('Sponsored Truth') || text.includes('Sponsored')) {
+            console.log(`❌ Спонсорский пост`);
+            continue;
+        }
+        
+        const hasAuthor = text.includes(`@${targetUsername}`) || text.includes(targetUsername);
+        const mentions = (text.match(/@\w+/g) || []).length;
+        
+        console.log(`Содержит автора: ${hasAuthor}, mentions: ${mentions}`);
+        
+        if (hasAuthor && mentions <= 2) {
+            console.log(`✅ ПОСТ АВТОРА НАЙДЕН!`);
+            return {
+                content: text.substring(0, 500),
+                timestamp: new Date().toISOString()
+            };
+        } else {
+            console.log(`❌ Не пост автора`);
+        }
     }
     
-   freeBrowser.isBusy = true;
-const startTime = Date.now();
+    console.log(`❌ Постов автора не найдено`);
+    return null;
+}, username);
 
-// Сначала пробуем через API
-try {
-    const apiResult = await this.parseViaAPI(username);
-    if (apiResult) {
+        await page.close();
         const parseTime = Date.now() - startTime;
-        logger.info(`🚀 @${username}: API success (${parseTime}ms)`);
-        return apiResult;
-    }
-} catch (apiError) {
-    logger.warn(`🚀 @${username}: API failed, fallback to browser`);
-}
-
-try {
-    logger.info(`🔍 @${username}: Starting parse...`);
-    
-    const page = await freeBrowser.context.newPage();
-    logger.info(`📄 @${username}: Page created`);
-
-    // Добавляем авторизацию
-    await page.setExtraHTTPHeaders({
-        'Authorization': `Bearer ${this.token}`,
-        'X-Requested-With': 'XMLHttpRequest',
-        'Accept': 'application/json, text/plain, */*',
-        'Content-Type': 'application/json',
-        'Referer': 'https://truthsocial.com/',
-        'Origin': 'https://truthsocial.com'
-    });
-    logger.info(`🔑 @${username}: Authorization token added`);
-
-    // Добавляем токен в localStorage для веб-интерфейса
-    await page.addInitScript(() => {
-        localStorage.setItem('access_token', 'BlChfq4xZWeEvTEPFYD1EmeY4iYLsitAiNh3VYP8g1o');
-        localStorage.setItem('token_type', 'Bearer');
-    });
-    
-
-    logger.info(`🚫 @${username}: Heavy resources blocked, JS allowed`);
-    
-    logger.info(`🌐 @${username}: Navigating to page...`);
-    await page.goto(`https://truthsocial.com/@${username}`, { 
-        waitUntil: 'networkidle',
-        timeout: 15000
-    });
-
-    // Ждем загрузки контента (Truth Social грузится через JS)
-    await page.waitForTimeout(8000);
-// Пытаемся проскроллить вниз чтобы загрузить контент
-await page.evaluate(() => {
-    window.scrollTo(0, 500);
-});
-
-// Ждем полного выполнения всех скриптов
-await page.waitForLoadState('networkidle');
-await page.waitForTimeout(5000);
-
-// Проверяем что страница полностью загрузилась
-const isLoaded = await page.evaluate(() => {
-    return document.readyState === 'complete' && 
-           window.performance.timing.loadEventEnd > 0;
-});
-logger.info(`📋 @${username}: Page fully loaded: ${isLoaded}`);
-
-// Ждем загрузки React приложения
-try {
-    await page.waitForSelector('div[role="main"], main, [data-testid], .timeline', { 
-        timeout: 15000 
-    });
-    logger.info(`⚛️ @${username}: React app loaded`);
-} catch (e) {
-    logger.warn(`⚛️ @${username}: React app not loaded, continuing anyway`);
-}
-
-await page.waitForTimeout(2000);
-    
-
-    logger.info(`✅ @${username}: Page loaded`);
-        if (global.sendLogUpdate) {
-            global.sendLogUpdate({ level: 'info', message: `✅ @${username}: Page loaded` });
-        }
-            
-logger.info(`🔎 @${username}: Extracting posts...`);
-if (global.sendLogUpdate) {
-    global.sendLogUpdate({ level: 'info', message: `🔎 @${username}: Extracting posts...` });
-}
-
-
-// Делаем скриншот для отладки
-await page.screenshot({ path: `debug-${username}.png`, fullPage: false });
-logger.info(`📸 @${username}: Screenshot saved as debug-${username}.png`);
-
-// Проверяем авторизованы ли мы
-const authStatus = await page.evaluate(() => {
-    // Ищем элементы которые показывают что мы залогинены
-    const loginButton = document.querySelector('a[href="/auth/sign_in"], button:has-text("Log in")');
-    const userMenu = document.querySelector('[data-testid="user-menu"], .user-avatar');
-    
-    return {
-        hasLoginButton: !!loginButton,
-        hasUserMenu: !!userMenu,
-        currentUrl: window.location.href,
-        bodyHasLogin: document.body.textContent.includes('Log in')
-    };
-});
-
-logger.info(`🔐 AUTH @${username}: ${JSON.stringify(authStatus)}`);
-
-// Проверяем на rate limit
-const isRateLimit = await page.locator('text=You\'re going too fast').count() > 0;
-if (isRateLimit) {
-    logger.warn(`⏳ @${username}: Rate limited, waiting 10 seconds...`);
-    await page.waitForTimeout(10000);
-    return null; // Пропускаем этот запрос
-}
-
-// Закрываем cookie notice если есть
-try {
-    await page.locator('text=Accept').click({ timeout: 2000 });
-    logger.info(`🍪 @${username}: Cookie notice accepted`);
-} catch (e) {
-    // Игнорируем если кнопки нет
-}
-
-const post = await page.evaluate(() => {
-
-    // Отладочная информация
-logger.info(`🔍 @${username}: Post extraction result: ${post ? 'FOUND' : 'NOT FOUND'}`);
+        
+logger.info(`⚡ @${username}: Parse done in ${parseTime}ms`);
 
 if (post) {
-    logger.info(`📝 @${username}: Content preview: "${post.content.substring(0, 100)}..."`);
-    logger.info(`🕐 @${username}: Timestamp: ${post.timestamp}`);
-} else {
-    // Если пост не найден, проверяем что на странице
-    const pageInfo = await page.evaluate(() => {
-        return {
-            title: document.title,
-            articlesCount: document.querySelectorAll('article').length,
-            postsCount: document.querySelectorAll('[role="article"]').length,
-            hasAuthToken: !!localStorage.getItem('access_token'),
-            bodyText: document.body.textContent.substring(0, 200)
-        };
-    });
+    const lastPostContent = this.lastPostIds.get(username);
     
-    logger.info(`🔍 @${username}: Page info: ${JSON.stringify(pageInfo)}`);
-}
-    // Функция проверки на спонсорский пост
-    function isSponsoredPost(element) {
-        const text = element.textContent?.toLowerCase() || '';
-        const html = element.innerHTML?.toLowerCase() || '';
-        
-        return text.includes('sponsored') || 
-               text.includes('promoted') || 
-               text.includes('advertisement') ||
-               html.includes('sponsored') ||
-               element.querySelector('[data-testid="socialContext"]')?.textContent?.includes('Promoted');
+    // Если это первый запуск - просто запоминаем пост
+    if (!lastPostContent) {
+        this.lastPostIds.set(username, post.content);
+        logger.info(`📋 @${username}: Initial post saved (not notifying)`);
+        return null; // Не уведомляем о первом посте
     }
     
-    // Ищем все статьи/посты на странице
-    const articles = document.querySelectorAll('article, [data-testid="tweet"], .status, .post-content');
-    
-    if (articles.length === 0) {
-        // Если нет article элементов, ищем по структуре Truth Social
-        const postElements = document.querySelectorAll('div[role="article"], div[data-focusable="true"]');
+    // Если пост изменился - это новый пост!
+    if (lastPostContent !== post.content) {
+        this.lastPostIds.set(username, post.content);
+        logger.info(`🎯 NEW POST DETECTED @${username}: ${post.content.substring(0, 100)}`);
         
-        for (const element of postElements) {
-            if (isSponsoredPost(element)) continue; // Пропускаем спонсорские
-            
-            const textContent = element.textContent?.trim();
-            const timeElement = element.querySelector('time');
-            
-            if (textContent && textContent.length > 10 && timeElement) {
-                return {
-                    id: Date.now().toString(),
-                    content: textContent.substring(0, 500),
-                    timestamp: timeElement.getAttribute('datetime') || new Date().toISOString(),
-                    url: window.location.href
-                };
-            }
-        }
-    }
-    
-    // Обработка обычных article элементов
-    for (const article of articles) {
-        if (isSponsoredPost(article)) continue; // Пропускаем спонсорские
+        // Отправляем уведомление только о новом посте
+        this.sendToInterface({
+            content: post.content,
+            timestamp: new Date().toISOString(),
+            url: `https://truthsocial.com/@${username}`
+        }, username, parseTime);
         
-        const textContent = article.textContent?.trim();
-        const timeElement = article.querySelector('time');
-        
-        if (textContent && textContent.length > 10 && timeElement) {
-            return {
-                id: Date.now().toString(),
-                content: textContent.substring(0, 500),
-                timestamp: timeElement.getAttribute('datetime') || new Date().toISOString(),
-                url: window.location.href
-            };
-        }
-    }
-    
-    return null;
-});
-
-
-
-
-
-
-
-// Добавь логирование результата после page.evaluate()
-if (post && post.debug) {
-    logger.info(`🔍 PAGE INFO @${username}: ${JSON.stringify(post.pageInfo)}`);
-    logger.info(`🔍 TEXT ELEMENTS @${username}: ${JSON.stringify(post.textElements.slice(0, 3))}`);
-}
-
-// Отдельно логируем HTML
-const pageHTML = await page.content();
-logger.info(`🔍 HTML @${username}: ${pageHTML.substring(0, 2000)}`);
-
-    
-    await page.close();
-    const parseTime = Date.now() - startTime;
-
-        if (post) {
-            // Проверяем это новый пост или уже видели
-            const lastPostId = this.lastPostIds.get(username);
-            
-            if (lastPostId !== post.id && lastPostId !== post.content) {
-                // Сохраняем ID нового поста
-                this.lastPostIds.set(username, post.content);
-                
-                logger.info(`🎯 NEW POST @${username}: ${post.content.substring(0, 100)}`);
-                
-                // Отправляем в интерфейс только новые посты
-                this.sendToInterface(post, username, parseTime);
-                
-                return post;
-            } else {
-                logger.info(`🔄 Same post @${username}: already seen`);
-            }
-        } else {
-            logger.info(`📭 No posts found @${username}`);
-        }
-
-    
-        
-        if (post && this.shouldNotify(post, keywords)) {
-            logger.info(`🎯 NEW POST @${username} (${parseTime}ms)`);
-            this.sendToInterface(post, username, parseTime);
-        } else {
-
-
-            const successCount = this.successCounts?.get(username) || 0;
-            if (successCount % 5 === 0) {
-                logger.info(`✅ Monitoring @${username} (${parseTime}ms)`);
-            }
-            this.successCounts = this.successCounts || new Map();
-            this.successCounts.set(username, successCount + 1);
-        }
-        
-        this.failedAttempts.set(username, 0);
         return post;
+    } else {
+        // Тот же пост - не уведомляем
+        logger.info(`🔄 @${username}: Same post (${parseTime}ms)`);
+        return null;
+    }
+} else {
+    logger.info(`📭 @${username}: No posts found (${parseTime}ms)`);
+    return null;
+}
         
     } catch (error) {
-        throw error;
+        logger.error(`❌ @${username}: ${error.message}`);
+        return null;
     } finally {
-        freeBrowser.isBusy = false; // Освобождаем браузер
+        freeBrowser.isBusy = false;
     }
 }
 
-sendToInterface(post, username, parseTime) {
-    if (global.io) {
-        global.io.emit('new-post', {
-            username,
-            content: post.content,
-            timestamp: post.timestamp,
-            url: post.url,
-            parseTime: parseTime // Добавляем время парсинга
-        });
-        
-        global.io.emit('log', {
-            level: 'success',
-            message: `📍 @${username} (${parseTime}ms): ${post.content.substring(0, 50)}...`
-        });
-        
-        // Отправляем метрики производительности
-        global.io.emit('performance', {
-            username: username,
-            parseTime: parseTime,
-            timestamp: Date.now()
-        });
-    }
-}
 
-async switchUserProxy(username) {
-    logger.warn(`Switching proxy for @${username} after repeated failures`);
     
-    // Закрываем старый браузер если есть
-    const oldSession = this.userSessionMap.get(username);
-    if (oldSession && oldSession.browser) {
-        try {
-            await oldSession.browser.close();
-        } catch (e) {
-            // Игнорируем ошибки закрытия
+    sendToInterface(post, username, parseTime) {
+        if (global.io) {
+            global.io.emit('new-post', {
+                username,
+                content: post.content,
+                timestamp: post.timestamp,
+                url: post.url,
+                parseTime: parseTime
+            });
+            
+            global.io.emit('log', {
+                level: 'success',
+                message: `📍 @${username} (${parseTime}ms): ${post.content.substring(0, 50)}...`
+            });
         }
-        oldSession.browser = null;
-        oldSession.context = null;
     }
-    
-    // Получаем новый прокси
-    const newProxy = this.proxyManager.getNextProxy();
-    this.userProxyMap.set(username, newProxy);
-    
-    // Помечаем старую сессию как невалидную
-    if (oldSession) {
-        oldSession.isValid = false;
-    }
-    
-    // Создаем новую сессию
-    await this.createUserSession(username);
-    
-    // Сбрасываем счетчик ошибок
-    this.failedAttempts.set(username, 0);
-    
-    if (global.io) {
-        global.io.emit('log', {
-            level: 'warning',
-            message: `🔄 Switched proxy for @${username} due to repeated failures`
-        });
-    }
-}
 
-async startParallelParsing(profiles) {
-    this.activeIntervals = new Map();
-    
-    logger.info(`Creating sessions for ${profiles.length} profiles...`);
-    
-    // Отправляем статус в веб-интерфейс
-    if (global.io) {
-        global.io.emit('log', {
-            level: 'info',
-            message: `🔄 Creating sessions for ${profiles.length} profiles...`
-        });
-    }
-    
-    for (const profile of profiles) {
-        // Назначаем уникальный прокси каждому пользователю
-        if (!this.userProxyMap.has(profile.username)) {
-            const proxy = this.proxyManager.getNextProxy();
-            this.userProxyMap.set(profile.username, proxy);
+    async startParallelParsing(profiles) {
+        // Останавливаем все старые интервалы
+        for (const [username, interval] of this.activeIntervals) {
+            clearInterval(interval);
+            logger.info(`🛑 Stopped old monitoring for @${username}`);
+        }
+        this.activeIntervals.clear();
+        
+        // Закрываем все старые браузеры
+        for (const [username, browsers] of this.browserPools) {
+            for (const browserData of browsers) {
+                try {
+                    await browserData.browser.close();
+                } catch (e) {}
+            }
+        }
+        this.browserPools.clear();
+        
+        logger.info(`Creating sessions for ${profiles.length} profiles...`);
+        
+        // Создаем сессии и браузеры для каждого профиля
+        for (const profile of profiles) {
+            await this.createUserSession(profile.username);
+            await this.createBrowserPool(profile.username, this.userSessionMap.get(profile.username));
             
-            logger.info(`Assigned proxy to @${profile.username}: ${this.proxyManager.parseProxy(proxy)?.server}`);
-            
-            // Отправляем в веб-интерфейс
             if (global.io) {
                 global.io.emit('log', {
-                    level: 'info',
-                    message: `📡 Setting up @${profile.username}...`
+                    level: 'success',
+                    message: `✅ Session ready for @${profile.username}`
                 });
             }
         }
         
-        
-        // Создаем стабильную сессию для пользователя - ЖДЕМ завершения
-        await this.createUserSession(profile.username);
-
-        await this.createBrowserPool(profile.username, this.userSessionMap.get(profile.username));
-        
-        // Уведомляем о готовности сессии
-        if (global.io) {
-            global.io.emit('log', {
-                level: 'success',
-                message: `✅ Session ready for @${profile.username}`
-            });
+        // Запускаем мониторинг
+        for (const profile of profiles) {
+            const interval = setInterval(async () => {
+                try {
+                    await this.parseUserWithStableIP(profile.username, profile.keywords);
+                } catch (error) {
+                    logger.error(`Monitoring error @${profile.username}: ${error.message}`);
+                }
+            }, 10000); // 10 секунд между запросами
+            
+            this.activeIntervals.set(profile.username, interval);
+            logger.info(`Started monitoring @${profile.username} every 10s`);
         }
     }
-    
-    logger.info('All user sessions created, starting monitoring...');
-    
-    // Остальной код без изменений...
-    // Запускаем мониторинг только после создания всех сессий
-    // Запускаем мониторинг только после создания всех сессий
-    for (const profile of profiles) {
-        // Увеличиваем интервал с 300ms до 2000ms (2 секунды)
-        const interval = setInterval(async () => {
-            await this.parseWithRetry(profile.username, profile.keywords);
-        }, 5000);
+
+    async createBrowserPool(username, userSession) {
+        if (!userSession) return;
         
-        this.activeIntervals.set(profile.username, interval);
-        logger.info(`Started monitoring @${profile.username} every 0.5s with ${this.poolSize} browsers`);
-    }
-}
-
-async parseWithRetry(username, keywords, maxRetries = 3) {
-    let attempts = 0;
-    
-    while (attempts < maxRetries) {
-        try {
-            const result = await this.parseUserWithStableIP(username, keywords);
-            return result;
-            
-        } catch (error) {
-            attempts++;
-            
-            if (attempts === maxRetries) {
-                logger.warn(`@${username}: ${maxRetries} failures, switching proxy...`);
-                await this.switchUserProxy(username);
-                
-                // Увеличиваем паузу после смены прокси до 30 секунд
-                await new Promise(resolve => setTimeout(resolve, 30000));
-                return null; // Возвращаем null чтобы прервать цикл
-            }
-            
-            await new Promise(resolve => setTimeout(resolve, 2000));
-        }
-    }
-    
-    return null;
-}
-
-shouldNotify(post, keywords) {
-    if (!keywords || keywords.length === 0) return true;
-    
-    const content = post.content.toLowerCase();
-    return keywords.some(keyword => content.includes(keyword.toLowerCase()));
-}
-
-stopProfileMonitoring(username) {
-    const interval = this.activeIntervals.get(username);
-    if (interval) {
-        clearInterval(interval);
-        this.activeIntervals.delete(username);
+        const browsers = [];
         
-        if (global.io) {
-            global.io.emit('log', {
-                level: 'error',
-                message: `Stopped monitoring @${username} due to repeated IP failures`
-            });
-        }
-    }
-}
-
-async createBrowserPool(username, userSession) {
-    const browsers = [];
-    
-    for (let i = 0; i < this.poolSize; i++) {
         try {
             const browser = await chromium.launch({ 
                 headless: true,
@@ -609,83 +277,53 @@ async createBrowserPool(username, userSession) {
                 proxy: userSession.proxy
             });
             
-            await context.addCookies(userSession.cookies);
+            if (userSession.cookies && userSession.cookies.length > 0) {
+                await context.addCookies(userSession.cookies);
+            }
             
             browsers.push({ browser, context, isBusy: false });
             
-            if (global.io) {
-                global.io.emit('log', {
-                    level: 'info',
-                    message: `🔧 Created browser ${i+1}/${this.poolSize} for @${username}`
-                });
-            }
-            
         } catch (error) {
-            logger.error(`Failed to create browser ${i+1} for ${username}: ${error.message}`);
-        }
-    }
-    
-    this.browserPools.set(username, browsers);
-    logger.info(`Browser pool ready for @${username}: ${browsers.length} browsers`);
-}
-
-async parseViaAPI(username) {
-    try {
-        const response = await axios.get(`https://truthsocial.com/api/v1/accounts/${username}/statuses`, {
-            headers: {
-                'Authorization': `Bearer ${this.token}`,
-                'User-Agent': config.parser.userAgent
-            },
-            timeout: 5000
-        });
-        
-        if (response.data && response.data.length > 0) {
-            const latestPost = response.data[0];
-            return {
-                id: latestPost.id,
-                content: latestPost.content,
-                timestamp: latestPost.created_at,
-                url: latestPost.url
-            };
+            logger.error(`Failed to create browser for ${username}: ${error.message}`);
         }
         
-        return null;
-    } catch (error) {
-        throw error;
+        this.browserPools.set(username, browsers);
+        logger.info(`Browser pool ready for @${username}: ${browsers.length} browsers`);
     }
-}
 
-
-
-async stop() {
-    // Останавливаем все интервалы мониторинга
-    for (const [username, interval] of this.activeIntervals) {
-        clearInterval(interval);
-        logger.info(`Stopped monitoring @${username}`);
+    shouldNotify(post, keywords) {
+        if (!keywords || keywords.length === 0) return true;
+        
+        const content = post.content.toLowerCase();
+        return keywords.some(keyword => content.includes(keyword.toLowerCase()));
     }
-    this.activeIntervals.clear();
-    
-    // Закрываем все браузеры пользователей
-    for (const [username, session] of this.userSessionMap) {
-        if (session.browser) {
-            try {
-                await session.browser.close();
-            } catch (e) {
-                // Игнорируем ошибки закрытия
+
+    async stop() {
+        // Останавливаем все интервалы
+        for (const [username, interval] of this.activeIntervals) {
+            clearInterval(interval);
+            logger.info(`Stopped monitoring @${username}`);
+        }
+        this.activeIntervals.clear();
+        
+        // Закрываем все браузеры
+        for (const [username, browsers] of this.browserPools) {
+            for (const browserData of browsers) {
+                try {
+                    await browserData.browser.close();
+                } catch (e) {}
             }
         }
+        this.browserPools.clear();
+        
+        logger.info('Parser stopped completely');
     }
-    
-    await this.close();
-    logger.info('Parser stopped completely');
-}
 
-
-
-async close() {
-    this.sessions.clear();
-    logger.info('Stealth Parser closed, sessions cleared');
-}
+    async close() {
+        await this.stop();
+        this.sessions.clear();
+        logger.info('Stealth Parser closed');
+    }
 }
 
 module.exports = StealthParser;
