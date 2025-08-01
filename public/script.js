@@ -15,6 +15,10 @@ const postsPerHour = document.getElementById('posts-per-hour');
 const successRate = document.getElementById('success-rate');
 const recentPosts = document.getElementById('recent-posts');
 const logsContainer = document.getElementById('logs-container');
+const avgParseTime = document.getElementById('avg-parse-time');
+const minParseTime = document.getElementById('min-parse-time');
+const maxParseTime = document.getElementById('max-parse-time');
+const clearLogsBtn = document.getElementById('clear-logs-btn');
 
 // WebSocket events
 socket.on('stats', (stats) => {
@@ -29,10 +33,19 @@ socket.on('log', (log) => {
     addLogToUI(log);
 });
 
+socket.on('parse-stats', (stats) => {
+    updateParseStats(stats);
+});
+
+socket.on('logs-cleared', () => {
+    logsContainer.innerHTML = '';
+});
+
 // Event listeners
 startBtn.addEventListener('click', startParser);
 stopBtn.addEventListener('click', stopParser);
 addProfileBtn.addEventListener('click', addProfile);
+clearLogsBtn.addEventListener('click', clearLogs);
 usernameInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') addProfile();
 });
@@ -231,6 +244,16 @@ function createUserMetric(username) {
     `;
     recentPosts.appendChild(metricDiv);
     return document.getElementById(`avg-time-${username}`);
+}
+
+function updateParseStats(stats) {
+    avgParseTime.textContent = stats.average > 0 ? stats.average + 'ms' : '0ms';
+    minParseTime.textContent = stats.min < Infinity ? stats.min + 'ms' : '0ms';
+    maxParseTime.textContent = stats.max + 'ms';
+}
+
+function clearLogs() {
+    socket.emit('clear-logs');
 }
 
 // Принудительно обновляем статус при подключении

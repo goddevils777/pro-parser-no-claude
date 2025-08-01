@@ -152,64 +152,104 @@ async parseUserWithStableIP(username, keywords) {
         return null;
     }
     
-    freeBrowser.isBusy = true; // Блокируем браузер
-    const startTime = Date.now();
+   freeBrowser.isBusy = true;
+const startTime = Date.now();
+
+try {
+    logger.info(`🔍 @${username}: Starting parse...`);
     
-    try {
-        const page = await freeBrowser.context.newPage();
-        
-        await page.route('**/*', (route) => {
-            const resourceType = route.request().resourceType();
-            if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-                route.abort();
-            } else {
-                route.continue();
-            }
-        });
-        
+    const page = await freeBrowser.context.newPage();
+    logger.info(`📄 @${username}: Page created`);
+    
+    await page.route('**/*', (route) => {
+        const resourceType = route.request().resourceType();
+        if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+            route.abort();
+        } else {
+            route.continue();
+        }
+    });
+    logger.info(`🚫 @${username}: Resources blocked`);
+    
+    logger.info(`🌐 @${username}: Navigating to page...`);
         await page.goto(`https://truthsocial.com/@${username}`, { 
-            waitUntil: 'domcontentloaded',
-            timeout: 5000 // Уменьшили timeout
+            waitUntil: 'load',
+            timeout: 3000
         });
-        
-        const post = await page.evaluate(() => {
-            const selectors = ['[data-testid="post"]', 'article', '.status', '[role="article"]'];
-            let postElements = [];
+        logger.info(`✅ @${username}: Page loaded`);
+        if (global.sendLogUpdate) {
+            global.sendLogUpdate({ level: 'info', message: `✅ @${username}: Page loaded` });
+        }
             
-            for (const selector of selectors) {
-                postElements = document.querySelectorAll(selector);
-                if (postElements.length > 0) break;
+logger.info(`🔎 @${username}: Extracting posts...`);
+if (global.sendLogUpdate) {
+    global.sendLogUpdate({ level: 'info', message: `🔎 @${username}: Extracting posts...` });
+}
+
+const post = await page.evaluate(() => {
+    // Ищем посты по актуальным селекторам Truth Social
+    const selectors = [
+        '[data-testid="status"]',
+        'div[data-id]',
+        'p[data-markup="true"]'
+    ];
+    
+    let postElement = null;
+    
+    for (const selector of selectors) {
+        const elements = document.querySelectorAll(selector);
+        if (elements.length > 0) {
+            postElement = elements[0];
+            break;
+        }
+    }
+    
+    if (!postElement) return null;
+    
+    // Извлекаем текст поста
+    const contentElement = postElement.querySelector('p[data-markup="true"]') || postElement;
+    const content = contentElement.textContent?.trim();
+    
+    if (!content || content.length < 1) return null;
+    
+    return {
+        id: `${Date.now()}_${Math.random()}`,
+        content: content.substring(0, 400),
+        timestamp: new Date().toISOString(),
+        url: window.location.href
+    };
+});
+
+// ДОБАВИТЬ ЭТОТ БЛОК:
+logger.info(`🔍 RESULT @${username}: ${post ? 'FOUND' : 'NULL'}`);
+if (post) {
+    logger.info(`📝 CONTENT @${username}: ${post.content.substring(0, 100)}`);
+}
+
+post = null; // Временно возвращаем null
+    
+    await page.close();
+    const parseTime = Date.now() - startTime;
+
+        if (post) {
+            logger.info(`🎯 @${username}: FOUND POST in ${parseTime}ms`);
+            if (global.sendLogUpdate) {
+                global.sendLogUpdate({ level: 'success', message: `🎯 @${username}: FOUND POST in ${parseTime}ms` });
             }
-            
-            if (postElements.length === 0) return null;
-            
-            const firstPost = postElements[0];
-            const content = firstPost.textContent?.trim();
-            
-            if (!content || content.length < 10) return null;
-            
-            return {
-                id: `${Date.now()}_${Math.random()}`,
-                content: content.substring(0, 400),
-                timestamp: new Date().toISOString(),
-                url: window.location.href
-            };
-        });
-        
-        await page.close();
-        
-        const parseTime = Date.now() - startTime;
+        } else {
+            logger.info(`📭 @${username}: No new posts (${parseTime}ms)`);
+            if (global.sendLogUpdate) {
+                global.sendLogUpdate({ level: 'info', message: `📭 @${username}: No new posts (${parseTime}ms)` });
+            }
+        }
+
+    
         
         if (post && this.shouldNotify(post, keywords)) {
             logger.info(`🎯 NEW POST @${username} (${parseTime}ms)`);
             this.sendToInterface(post, username, parseTime);
         } else {
-            if (global.io) {
-                global.io.emit('log', {
-                    level: 'info',
-                    message: `✅ @${username} parsed in ${parseTime}ms`
-                });
-            }
+
 
             const successCount = this.successCounts?.get(username) || 0;
             if (successCount % 5 === 0) {
@@ -345,7 +385,7 @@ async startParallelParsing(profiles) {
         // Увеличиваем интервал с 300ms до 2000ms (2 секунды)
         const interval = setInterval(async () => {
             await this.parseWithRetry(profile.username, profile.keywords);
-        }, 2500);
+        }, 5000);
         
         this.activeIntervals.set(profile.username, interval);
         logger.info(`Started monitoring @${profile.username} every 0.5s with ${this.poolSize} browsers`);
