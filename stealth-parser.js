@@ -155,28 +155,72 @@ async parseUserWithStableIP(username, keywords) {
    freeBrowser.isBusy = true;
 const startTime = Date.now();
 
+// Сначала пробуем через API
+try {
+    const apiResult = await this.parseViaAPI(username);
+    if (apiResult) {
+        const parseTime = Date.now() - startTime;
+        logger.info(`🚀 @${username}: API success (${parseTime}ms)`);
+        return apiResult;
+    }
+} catch (apiError) {
+    logger.warn(`🚀 @${username}: API failed, fallback to browser`);
+}
+
 try {
     logger.info(`🔍 @${username}: Starting parse...`);
     
     const page = await freeBrowser.context.newPage();
     logger.info(`📄 @${username}: Page created`);
-    
-    await page.route('**/*', (route) => {
-        const resourceType = route.request().resourceType();
-        if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-            route.abort();
-        } else {
-            route.continue();
-        }
+
+    // Добавляем авторизацию
+    await page.setExtraHTTPHeaders({
+        'Authorization': `Bearer ${this.token}`,
+        'X-Requested-With': 'XMLHttpRequest'
     });
-    logger.info(`🚫 @${username}: Resources blocked`);
+    logger.info(`🔑 @${username}: Authorization token added`);
+    
+
+    logger.info(`🚫 @${username}: Heavy resources blocked, JS allowed`);
     
     logger.info(`🌐 @${username}: Navigating to page...`);
-        await page.goto(`https://truthsocial.com/@${username}`, { 
-            waitUntil: 'load',
-            timeout: 3000
-        });
-        logger.info(`✅ @${username}: Page loaded`);
+    await page.goto(`https://truthsocial.com/@${username}`, { 
+        waitUntil: 'networkidle',
+        timeout: 15000
+    });
+
+    // Ждем загрузки контента (Truth Social грузится через JS)
+    await page.waitForTimeout(8000);
+// Пытаемся проскроллить вниз чтобы загрузить контент
+await page.evaluate(() => {
+    window.scrollTo(0, 500);
+});
+
+// Ждем полного выполнения всех скриптов
+await page.waitForLoadState('networkidle');
+await page.waitForTimeout(5000);
+
+// Проверяем что страница полностью загрузилась
+const isLoaded = await page.evaluate(() => {
+    return document.readyState === 'complete' && 
+           window.performance.timing.loadEventEnd > 0;
+});
+logger.info(`📋 @${username}: Page fully loaded: ${isLoaded}`);
+
+// Ждем загрузки React приложения
+try {
+    await page.waitForSelector('div[role="main"], main, [data-testid], .timeline', { 
+        timeout: 15000 
+    });
+    logger.info(`⚛️ @${username}: React app loaded`);
+} catch (e) {
+    logger.warn(`⚛️ @${username}: React app not loaded, continuing anyway`);
+}
+
+await page.waitForTimeout(2000);
+    
+
+    logger.info(`✅ @${username}: Page loaded`);
         if (global.sendLogUpdate) {
             global.sendLogUpdate({ level: 'info', message: `✅ @${username}: Page loaded` });
         }
@@ -186,53 +230,127 @@ if (global.sendLogUpdate) {
     global.sendLogUpdate({ level: 'info', message: `🔎 @${username}: Extracting posts...` });
 }
 
-const post = await page.evaluate(() => {
-    // Сначала посмотрим что есть на странице
-    console.log('Page title:', document.title);
-    console.log('Body contains:', document.body.textContent.substring(0, 200));
+
+// Делаем скриншот для отладки
+await page.screenshot({ path: `debug-${username}.png`, fullPage: false });
+logger.info(`📸 @${username}: Screenshot saved as debug-${username}.png`);
+
+// Проверяем авторизованы ли мы
+const authStatus = await page.evaluate(() => {
+    // Ищем элементы которые показывают что мы залогинены
+    const loginButton = document.querySelector('a[href="/auth/sign_in"], button:has-text("Log in")');
+    const userMenu = document.querySelector('[data-testid="user-menu"], .user-avatar');
     
-    // Ищем все возможные элементы с текстом
-    const allElements = document.querySelectorAll('*');
-    const textElements = [];
-    
-    allElements.forEach(el => {
-        const text = el.textContent?.trim();
-        if (text && text.length > 10 && text.length < 500) {
-            textElements.push({
-                tag: el.tagName,
-                text: text.substring(0, 100),
-                className: el.className,
-                id: el.id
-            });
-        }
-    });
-    
-    console.log('Found text elements:', textElements.slice(0, 5));
-    
-    return null; // Пока возвращаем null для отладки
+    return {
+        hasLoginButton: !!loginButton,
+        hasUserMenu: !!userMenu,
+        currentUrl: window.location.href,
+        bodyHasLogin: document.body.textContent.includes('Log in')
+    };
 });
 
-// ДОБАВИТЬ ЭТОТ БЛОК:
-logger.info(`🔍 RESULT @${username}: ${post ? 'FOUND' : 'NULL'}`);
-if (post) {
-    logger.info(`📝 CONTENT @${username}: ${post.content.substring(0, 100)}`);
+logger.info(`🔐 AUTH @${username}: ${JSON.stringify(authStatus)}`);
+
+// Проверяем на rate limit
+const isRateLimit = await page.locator('text=You\'re going too fast').count() > 0;
+if (isRateLimit) {
+    logger.warn(`⏳ @${username}: Rate limited, waiting 10 seconds...`);
+    await page.waitForTimeout(10000);
+    return null; // Пропускаем этот запрос
 }
 
-post = null; // Временно возвращаем null
+// Закрываем cookie notice если есть
+try {
+    await page.locator('text=Accept').click({ timeout: 2000 });
+    logger.info(`🍪 @${username}: Cookie notice accepted`);
+} catch (e) {
+    // Игнорируем если кнопки нет
+}
+
+const post = await page.evaluate(() => {
+    const timeElements = document.querySelectorAll('time');
+    const foundTimeData = [];
+    
+    timeElements.forEach((timeEl, index) => {
+        const timeTitle = timeEl.getAttribute('title');
+        const timeText = timeEl.textContent?.trim();
+        
+        // Смотрим что идёт после time элемента
+        let nextElement = timeEl.nextElementSibling;
+        let nextTexts = [];
+        
+        for (let j = 0; j < 3; j++) {
+            if (nextElement) {
+                const text = nextElement.textContent?.trim();
+                if (text && text.length > 5) {
+                    nextTexts.push(text.substring(0, 100));
+                }
+                nextElement = nextElement.nextElementSibling;
+            }
+        }
+        
+        foundTimeData.push({
+            index: index,
+            title: timeTitle,
+            text: timeText,
+            nextTexts: nextTexts
+        });
+    });
+    
+    return {
+        totalTimeElements: timeElements.length,
+        timeData: foundTimeData
+    };
+});
+
+logger.info(`🕐 TIME @${username}: Found ${post.totalTimeElements} time elements`);
+post.timeData.forEach(time => {
+    logger.info(`⏰ Time${time.index}: "${time.text}" (${time.title}) -> next: ${JSON.stringify(time.nextTexts)}`);
+});
+
+if (post) {
+    logger.info(`🎯 FOUND POST BY TIME @${username}: ${post.content.substring(0, 100)}`);
+} else {
+    logger.info(`📭 No posts found by time @${username}`);
+}
+
+
+
+
+
+// Добавь логирование результата после page.evaluate()
+if (post && post.debug) {
+    logger.info(`🔍 PAGE INFO @${username}: ${JSON.stringify(post.pageInfo)}`);
+    logger.info(`🔍 TEXT ELEMENTS @${username}: ${JSON.stringify(post.textElements.slice(0, 3))}`);
+}
+
+// Отдельно логируем HTML
+const pageHTML = await page.content();
+logger.info(`🔍 HTML @${username}: ${pageHTML.substring(0, 2000)}`);
+
     
     await page.close();
     const parseTime = Date.now() - startTime;
 
         if (post) {
-            logger.info(`🎯 @${username}: FOUND POST in ${parseTime}ms`);
-            if (global.sendLogUpdate) {
-                global.sendLogUpdate({ level: 'success', message: `🎯 @${username}: FOUND POST in ${parseTime}ms` });
+            // Проверяем это новый пост или уже видели
+            const lastPostId = this.lastPostIds.get(username);
+            
+            if (lastPostId !== post.id && lastPostId !== post.content) {
+                // Сохраняем ID нового поста
+                this.lastPostIds.set(username, post.content);
+                
+                logger.info(`🎯 NEW POST @${username}: ${post.content.substring(0, 100)}`);
+                
+                // Отправляем в интерфейс только новые посты
+                this.sendToInterface(post, username, parseTime);
+                
+                return post;
+            } else {
+                logger.info(`🔄 Same post @${username}: already seen`);
             }
         } else {
-            logger.info(`📭 @${username}: No new posts (${parseTime}ms)`);
-            if (global.sendLogUpdate) {
-                global.sendLogUpdate({ level: 'info', message: `📭 @${username}: No new posts (${parseTime}ms)` });
-            }
+            logger.info(`📭 No posts found @${username}`);
         }
 
     
@@ -466,6 +584,32 @@ async createBrowserPool(username, userSession) {
     
     this.browserPools.set(username, browsers);
     logger.info(`Browser pool ready for @${username}: ${browsers.length} browsers`);
+}
+
+async parseViaAPI(username) {
+    try {
+        const response = await axios.get(`https://truthsocial.com/api/v1/accounts/${username}/statuses`, {
+            headers: {
+                'Authorization': `Bearer ${this.token}`,
+                'User-Agent': config.parser.userAgent
+            },
+            timeout: 5000
+        });
+        
+        if (response.data && response.data.length > 0) {
+            const latestPost = response.data[0];
+            return {
+                id: latestPost.id,
+                content: latestPost.content,
+                timestamp: latestPost.created_at,
+                url: latestPost.url
+            };
+        }
+        
+        return null;
+    } catch (error) {
+        throw error;
+    }
 }
 
 
