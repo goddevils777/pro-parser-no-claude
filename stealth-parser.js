@@ -79,7 +79,6 @@ class StealthParser {
         }
     }
 
-
 async parseUserWithStableIP(username, keywords) {
     const browserPool = this.browserPools.get(username);
     const freeBrowser = browserPool?.find(b => !b.isBusy);
@@ -93,98 +92,82 @@ async parseUserWithStableIP(username, keywords) {
         
         const page = await freeBrowser.context.newPage();
         
-        // Простая загрузка без блокировок
         await page.goto(`https://truthsocial.com/@${username}`, { timeout: 8000 });
         
-        // Быстрый поиск
-        const post = await page.evaluate((targetUsername) => {
-    console.log(`=== ПОИСК ПОСТОВ @${targetUsername} ===`);
-    
-    const statusWrappers = document.querySelectorAll('.status__wrapper');
-    console.log(`Найдено status__wrapper: ${statusWrappers.length}`);
-    
-    if (statusWrappers.length === 0) {
-        console.log(`❌ Нет status__wrapper элементов`);
-        return null;
-    }
-    
-    for (let i = 0; i < statusWrappers.length; i++) {
-        const wrapper = statusWrappers[i];
-        const text = wrapper.textContent?.trim();
-        
-        console.log(`\n--- WRAPPER ${i+1} ---`);
-        console.log(`Текст: "${text?.substring(0, 100)}"`);
-        console.log(`Длина: ${text?.length || 0}`);
-        console.log(`Содержит Sponsored: ${text?.includes('Sponsored')}`);
-        console.log(`Содержит автора: ${text?.includes(targetUsername)}`);
-        
-        if (!text || text.length < 30) {
-            console.log(`❌ Слишком короткий`);
-            continue;
-        }
-        
-        if (text.includes('Sponsored Truth') || text.includes('Sponsored')) {
-            console.log(`❌ Спонсорский пост`);
-            continue;
-        }
-        
-        const hasAuthor = text.includes(`@${targetUsername}`) || text.includes(targetUsername);
-        const mentions = (text.match(/@\w+/g) || []).length;
-        
-        console.log(`Содержит автора: ${hasAuthor}, mentions: ${mentions}`);
-        
-        if (hasAuthor && mentions <= 2) {
-            console.log(`✅ ПОСТ АВТОРА НАЙДЕН!`);
+        // Добавляем отладку - что видит браузер
+        const debugInfo = await page.evaluate(() => {
             return {
-                content: text.substring(0, 500),
-                timestamp: new Date().toISOString()
+                url: window.location.href,
+                title: document.title,
+                bodyText: document.body?.textContent?.substring(0, 200) || 'NO BODY',
+                statusWrappers: document.querySelectorAll('.status__wrapper').length,
+                hasLoginForm: !!document.querySelector('input[type="email"]'),
+                allSelectors: Array.from(document.querySelectorAll('*')).slice(0, 10).map(el => el.tagName)
             };
-        } else {
-            console.log(`❌ Не пост автора`);
-        }
-    }
-    
-    console.log(`❌ Постов автора не найдено`);
-    return null;
-}, username);
+        });
+        
+        logger.info(`🔍 @${username} debug: ${JSON.stringify(debugInfo)}`);
+        
+        const post = await page.evaluate((targetUsername) => {
+            const statusWrappers = document.querySelectorAll('.status__wrapper');
+            
+            if (statusWrappers.length === 0) {
+                return null;
+            }
+            
+            for (let wrapper of statusWrappers) {
+                const text = wrapper.textContent?.trim();
+                
+                if (!text || text.length < 30) continue;
+                if (text.includes('Sponsored')) continue;
+                
+                const hasAuthor = text.includes(`@${targetUsername}`) || text.includes(targetUsername);
+                const mentions = (text.match(/@\w+/g) || []).length;
+                
+                if (hasAuthor && mentions <= 2) {
+                    return {
+                        content: text.substring(0, 500),
+                        timestamp: new Date().toISOString()
+                    };
+                }
+            }
+            
+            return null;
+        }, username);
 
         await page.close();
         const parseTime = Date.now() - startTime;
         
-logger.info(`⚡ @${username}: Parse done in ${parseTime}ms`);
+        logger.info(`⚡ @${username}: Parse done in ${parseTime}ms`);
 
-if (post) {
-    const lastPostContent = this.lastPostIds.get(username);
-    
-    // Если это первый запуск - просто запоминаем пост
-    if (!lastPostContent) {
-        this.lastPostIds.set(username, post.content);
-        logger.info(`📋 @${username}: Initial post saved (not notifying)`);
-        return null; // Не уведомляем о первом посте
-    }
-    
-    // Если пост изменился - это новый пост!
-    if (lastPostContent !== post.content) {
-        this.lastPostIds.set(username, post.content);
-        logger.info(`🎯 NEW POST DETECTED @${username}: ${post.content.substring(0, 100)}`);
-        
-        // Отправляем уведомление только о новом посте
-        this.sendToInterface({
-            content: post.content,
-            timestamp: new Date().toISOString(),
-            url: `https://truthsocial.com/@${username}`
-        }, username, parseTime);
-        
-        return post;
-    } else {
-        // Тот же пост - не уведомляем
-        logger.info(`🔄 @${username}: Same post (${parseTime}ms)`);
-        return null;
-    }
-} else {
-    logger.info(`📭 @${username}: No posts found (${parseTime}ms)`);
-    return null;
-}
+        if (post) {
+            const lastPostContent = this.lastPostIds.get(username);
+            
+            if (!lastPostContent) {
+                this.lastPostIds.set(username, post.content);
+                logger.info(`📋 @${username}: Initial post saved (not notifying)`);
+                return null;
+            }
+            
+            if (lastPostContent !== post.content) {
+                this.lastPostIds.set(username, post.content);
+                logger.info(`🎯 NEW POST DETECTED @${username}: ${post.content.substring(0, 100)}`);
+                
+                this.sendToInterface({
+                    content: post.content,
+                    timestamp: new Date().toISOString(),
+                    url: `https://truthsocial.com/@${username}`
+                }, username, parseTime);
+                
+                return post;
+            } else {
+                logger.info(`🔄 @${username}: Same post (${parseTime}ms)`);
+                return null;
+            }
+        } else {
+            logger.info(`📭 @${username}: No posts found (${parseTime}ms)`);
+            return null;
+        }
         
     } catch (error) {
         logger.error(`❌ @${username}: ${error.message}`);
@@ -193,7 +176,6 @@ if (post) {
         freeBrowser.isBusy = false;
     }
 }
-
 
     
     sendToInterface(post, username, parseTime) {
