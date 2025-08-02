@@ -3,11 +3,11 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
-"scripts": {
+  "scripts": {
     "start": "node app.js",
-    "dev": "node app.js", 
+    "dev": "node app.js",
     "test": "echo \"Error: no test specified\" && exit 1"
-},
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -30,6 +30,7 @@
     "puppeteer-cluster": "^0.24.0",
     "socket.io": "^4.8.1",
     "socks-proxy-agent": "^8.0.5",
+    "tesseract.js": "^6.0.1",
     "winston": "^3.17.0",
     "ws": "^8.18.3"
   }
