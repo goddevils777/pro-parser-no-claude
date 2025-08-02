@@ -53,22 +53,26 @@ usernameInput.addEventListener('keypress', (e) => {
 // Функции управления парсером
 async function startParser() {
     try {
-        // Сразу отключаем кнопку
+        console.log('Starting parser...'); // ОТЛАДКА
+        
         startBtn.disabled = true;
         startBtn.textContent = 'Starting...';
         
         const response = await fetch('/api/parser/start', { method: 'POST' });
         const result = await response.json();
         
+        console.log('Start result:', result); // ОТЛАДКА
+        
         if (result.success) {
             addLogToUI({ level: 'success', message: 'Parser started successfully' });
         } else {
-            // При ошибке возвращаем кнопку обратно
+            console.error('Start failed:', result.error); // ОТЛАДКА
             startBtn.disabled = false;
             startBtn.textContent = 'Start Parser';
+            alert('Failed to start: ' + result.error);
         }
     } catch (error) {
-        // При ошибке возвращаем кнопку обратно
+        console.error('Start error:', error); // ОТЛАДКА
         startBtn.disabled = false;
         startBtn.textContent = 'Start Parser';
         addLogToUI({ level: 'error', message: 'Failed to start parser: ' + error.message });
@@ -77,13 +81,26 @@ async function startParser() {
 
 async function stopParser() {
     try {
+        console.log('Stopping parser...'); // ОТЛАДКА
+        
         const response = await fetch('/api/parser/stop', { method: 'POST' });
         const result = await response.json();
         
+        console.log('Stop result:', result); // ОТЛАДКА
+        
         if (result.success) {
             addLogToUI({ level: 'info', message: 'Parser stopped' });
+            
+            // Принудительно обновляем кнопки
+            startBtn.disabled = false;
+            startBtn.textContent = 'Start Parser';
+            stopBtn.disabled = true;
+            
+        } else {
+            addLogToUI({ level: 'error', message: 'Failed to stop: ' + result.error });
         }
     } catch (error) {
+        console.log('Stop error:', error); // ОТЛАДКА
         addLogToUI({ level: 'error', message: 'Failed to stop parser: ' + error.message });
     }
 }
@@ -161,29 +178,37 @@ async function loadProfiles() {
 
 // Функции обновления UI
 function updateStats(stats) {
-    parserStatus.textContent = stats.isRunning ? 'Running' : 'Stopped';
-    parserStatus.className = `status ${stats.isRunning ? 'running' : 'stopped'}`;
-    totalPosts.textContent = stats.totalPosts || 0;
-    totalErrors.textContent = stats.errors || 0;
+    // Добавляем проверки на существование элементов
+    if (parserStatus) parserStatus.textContent = stats.isRunning ? 'running' : 'stopped';
+    if (totalPosts) totalPosts.textContent = stats.totalPosts || 0;
+    if (totalErrors) totalErrors.textContent = stats.errors || 0;
     
     // Управление кнопками
     if (stats.isRunning) {
-        startBtn.disabled = true;
-        startBtn.textContent = 'Parser Running';
-        stopBtn.disabled = false;
+        if (startBtn) {
+            startBtn.disabled = true;
+            startBtn.textContent = 'Parser Running';
+        }
+        if (stopBtn) stopBtn.disabled = false;
     } else {
-        startBtn.disabled = false;
-        startBtn.textContent = 'Start Parser';
-        stopBtn.disabled = true;
+        if (startBtn) {
+            startBtn.disabled = false;
+            startBtn.textContent = 'Start Parser';
+        }
+        if (stopBtn) stopBtn.disabled = true;
     }
     
-    // Остальные расчеты без изменений
-    const postsPerHourValue = stats.totalPosts > 0 ? Math.round(stats.totalPosts * (3600000 / (Date.now() - (stats.startTime || Date.now())))) : 0;
-    postsPerHour.textContent = postsPerHourValue;
+    // Остальные расчеты с проверками
+    if (postsPerHour) {
+        const postsPerHourValue = stats.totalPosts > 0 ? Math.round(stats.totalPosts * (3600000 / (Date.now() - (stats.startTime || Date.now())))) : 0;
+        postsPerHour.textContent = postsPerHourValue;
+    }
     
-    const total = (stats.totalPosts || 0) + (stats.errors || 0);
-    const successRateValue = total > 0 ? Math.round(((stats.totalPosts || 0) / total) * 100) : 100;
-    successRate.textContent = successRateValue + '%';
+    if (successRate) {
+        const total = (stats.totalPosts || 0) + (stats.errors || 0);
+        const successRateValue = total > 0 ? Math.round(((stats.totalPosts || 0) / total) * 100) : 100;
+        successRate.textContent = successRateValue + '%';
+    }
 }
 
 function addPostToUI(post) {
@@ -252,9 +277,154 @@ function updateParseStats(stats) {
     maxParseTime.textContent = stats.max + 'ms';
 }
 
+// === УПРАВЛЕНИЕ АККАУНТАМИ ===
+const addAccountBtn = document.getElementById('add-account-btn');
+const accountUsernameInput = document.getElementById('account-username-input');
+const accountsList = document.getElementById('accounts-list');
+
+addAccountBtn.addEventListener('click', addAccount);
+accountUsernameInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') addAccount();
+});
+
+async function addAccount() {
+    const username = accountUsernameInput.value.trim();
+    
+    if (!username) {
+        alert('Please enter account username');
+        return;
+    }
+    
+    // Блокируем кнопку до завершения всего процесса авторизации
+    addAccountBtn.disabled = true;
+    addAccountBtn.textContent = 'Opening browser...';
+    
+    try {
+        const response = await fetch('/api/accounts/authorize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            accountUsernameInput.value = '';
+            addAccountBtn.textContent = 'Waiting for authorization...';
+            // НЕ разблокируем кнопку - ждем подтверждения
+            loadAccounts();
+        } else {
+            alert('Failed to add account: ' + result.error);
+            // Разблокируем только при ошибке
+            addAccountBtn.disabled = false;
+            addAccountBtn.textContent = 'Add Account';
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+        // Разблокируем только при ошибке
+        addAccountBtn.disabled = false;
+        addAccountBtn.textContent = 'Add Account';
+    }
+}
+
+// Подтверждение авторизации
+async function confirmAuthorization(username) {
+    try {
+        const response = await fetch('/api/accounts/confirm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            loadAccounts();
+            // Разблокируем кнопку после успешного подтверждения
+            addAccountBtn.disabled = false;
+            addAccountBtn.textContent = 'Add Account';
+        } else {
+            alert('Failed to confirm: ' + result.error);
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+// Удаление аккаунта
+async function deleteAccount(username) {
+    if (!confirm(`Delete account ${username}?`)) return;
+    
+    try {
+        const response = await fetch(`/api/accounts/${username}`, {
+            method: 'DELETE'
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            loadAccounts();
+            // Разблокируем кнопку если удалили аккаунт в процессе авторизации
+            addAccountBtn.disabled = false;
+            addAccountBtn.textContent = 'Add Account';
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+// Загрузка списка аккаунтов
+async function loadAccounts() {
+    try {
+        const response = await fetch('/api/accounts');
+        const accounts = await response.json();
+        
+        accountsList.innerHTML = '';
+        
+        accounts.forEach(account => {
+            const accountDiv = document.createElement('div');
+            accountDiv.className = `account-item ${account.status}`;
+            
+            const statusIcon = account.status === 'authorized' ? '✅' : 
+                             account.status === 'authorizing' ? '🔄' : '❌';
+            
+            accountDiv.innerHTML = `
+                <div class="account-info">
+                    <span class="account-status">${statusIcon}</span>
+                    <span class="account-username">${account.username}</span>
+                    <span class="account-ip">${account.ip || 'No IP'}</span>
+                    <span class="account-cookies">${account.cookiesCount || 0} cookies</span>
+                </div>
+                <div class="account-actions">
+                    ${account.status === 'authorizing' ? 
+                        `<button onclick="confirmAuthorization('${account.username}')" class="btn btn-success btn-sm">I'm Authorized</button>` : ''}
+                    <button onclick="deleteAccount('${account.username}')" class="btn btn-danger btn-sm">Delete</button>
+                </div>
+            `;
+            
+            accountsList.appendChild(accountDiv);
+        });
+        
+    } catch (error) {
+        console.error('Failed to load accounts:', error);
+    }
+}
+
 function clearLogs() {
     socket.emit('clear-logs');
 }
+
+// Слушаем обновления статуса аккаунтов
+socket.on('account-status', (data) => {
+    loadAccounts(); // Перезагружаем список при изменении статуса
+});
+
+// Загружаем аккаунты при старте
+window.addEventListener('load', () => {
+    loadAccounts();
+});
+
+
 
 // Принудительно обновляем статус при подключении
 socket.on('connect', () => {

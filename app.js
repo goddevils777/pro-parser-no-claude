@@ -24,6 +24,7 @@ let parserStats = {
 // Загружаем логи и статистику из файлов
 let webLogs = [];
 let parseTimeStats = { min: Infinity, max: 0, total: 0, count: 0, average: 0 };
+let recentPosts = []; 
 let firstRequestSkipped = new Map();
 
 // Загрузка данных при старте
@@ -33,6 +34,11 @@ async function loadPersistedData() {
         parseTimeStats = await fs.readJson('./data/parse-stats.json').catch(() => ({ 
             min: Infinity, max: 0, total: 0, count: 0, average: 0 
         }));
+        recentPosts = await fs.readJson('./data/recent-posts.json').catch(() => []);
+        
+        // ОТЛАДКА
+        console.log(`Loaded ${webLogs.length} logs, ${recentPosts.length} posts`);
+        
     } catch (error) {
         console.log('No persisted data found, starting fresh');
     }
@@ -43,6 +49,7 @@ async function savePersistedData() {
     try {
         await fs.writeJson('./data/web-logs.json', webLogs);
         await fs.writeJson('./data/parse-stats.json', parseTimeStats);
+        await fs.writeJson('./data/recent-posts.json', recentPosts); // ДОБАВЬ ЭТУ СТРОКУ
     } catch (error) {
         console.error('Failed to save data:', error);
     }
@@ -90,62 +97,171 @@ app.delete('/api/profiles/:index', async (req, res) => {
 
 // Замени app.post('/api/parser/start') на:
 app.post('/api/parser/start', async (req, res) => {
-    if (!parserInstance) {
-        try {
-
+    try {
+        // Принудительно останавливаем старый парсер если есть
+        if (parserInstance) {
+            await parserInstance.stopMonitoring();
+        }
+        
+        if (!parserInstance) {
             const StealthParser = require('./stealth-parser');
-
-            // Делаем io глобальным для парсера
-            global.io = io;
-            global.totalPosts = 0;
-            global.totalErrors = 0;
-            
             parserInstance = new StealthParser();
             await parserInstance.init();
-            
-            parserStats.isRunning = true;
-            parserStats.startTime = Date.now();
-            
-            // Запускаем мониторинг
-            setTimeout(() => startMonitoring(), 1000);
-            
-            io.emit('log', {
-                level: 'success',
-                message: 'Parser started successfully'
-            });
-            
-            res.json({ success: true });
-        } catch (error) {
-            console.error('Parser start error:', error);
-            io.emit('log', {
-                level: 'error',
-                message: 'Failed to start parser: ' + error.message
-            });
-            res.json({ success: false, error: error.message });
+            global.io = io;
         }
-    } else {
-        res.json({ success: false, error: 'Parser already running' });
+        
+        const profiles = await fs.readJson('./data/profiles.json').catch(() => []);
+        
+        if (profiles.length === 0) {
+            return res.json({ success: false, error: 'No profiles to monitor' });
+        }
+        
+        // Запускаем мониторинг
+        await parserInstance.startMonitoring(profiles);
+        
+        parserStats.isRunning = true;
+        parserStats.startTime = Date.now();
+        
+        res.json({ success: true });
+        
+    } catch (error) {
+        res.json({ success: false, error: error.message });
     }
 });
 
 app.post('/api/parser/stop', async (req, res) => {
-    if (parserInstance) {
-        try {
-            await parserInstance.stop();
-            parserInstance = null;
-            parserStats.isRunning = false;
+    try {
+        if (parserInstance) {
+            await parserInstance.stopMonitoring();
+            parserStats.isRunning = false; // ВАЖНО!
             
+            // Отправляем обновленный статус клиентам
+            io.emit('stats', parserStats);
             io.emit('log', {
                 level: 'info',
-                message: 'Parser stopped'
+                message: 'Parser stopped (authorized browsers remain open)'
             });
-            
-            res.json({ success: true });
-        } catch (error) {
-            res.json({ success: false, error: error.message });
         }
+        res.json({ success: true });
+        
+    } catch (error) {
+        console.error('Stop error:', error);
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// === НОВЫЕ API ДЛЯ УПРАВЛЕНИЯ АККАУНТАМИ ===
+
+// Получение списка аккаунтов
+app.get('/api/accounts', (req, res) => {
+    if (parserInstance) {
+        const accounts = parserInstance.getAccountsList();
+        res.json(accounts);
     } else {
-        res.json({ success: false, error: 'Parser not running' });
+        res.json([]);
+    }
+});
+
+// Начало авторизации аккаунта
+app.post('/api/accounts/authorize', async (req, res) => {
+    const { username } = req.body;
+    
+    if (!username) {
+        return res.json({ success: false, error: 'Username required' });
+    }
+    
+    try {
+        if (!parserInstance) {
+            const StealthParser = require('./stealth-parser');
+            parserInstance = new StealthParser();
+            await parserInstance.init();
+            global.io = io;
+        }
+        
+        const result = await parserInstance.startAccountAuthorization(username);
+        res.json(result);
+        
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// Подтверждение авторизации аккаунта
+app.post('/api/accounts/confirm', async (req, res) => {
+    const { username } = req.body;
+    
+    if (!username) {
+        return res.json({ success: false, error: 'Username required' });
+    }
+    
+    try {
+        if (!parserInstance) {
+            return res.json({ success: false, error: 'Parser not initialized' });
+        }
+        
+        const result = await parserInstance.confirmAccountAuthorization(username);
+        res.json(result);
+        
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// Удаление аккаунта
+app.delete('/api/accounts/:username', async (req, res) => {
+    const { username } = req.params;
+    
+    try {
+        if (parserInstance) {
+            await parserInstance.removeAccount(username);
+        }
+        res.json({ success: true });
+        
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// Изменение логики запуска парсера
+app.post('/api/parser/start', async (req, res) => {
+    try {
+        if (!parserInstance) {
+            const StealthParser = require('./stealth-parser');
+            parserInstance = new StealthParser();
+            await parserInstance.init();
+            global.io = io;
+        }
+        
+        const profiles = await fs.readJson('./data/profiles.json').catch(() => []);
+        
+        if (profiles.length === 0) {
+            return res.json({ success: false, error: 'No profiles to monitor' });
+        }
+        
+        // Запускаем мониторинг
+        await parserInstance.startMonitoring(profiles);
+        
+        parserStats.isRunning = true;
+        parserStats.startTime = Date.now();
+        
+        res.json({ success: true });
+        
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// Остановка парсера (не закрывает авторизованные браузеры)
+app.post('/api/parser/stop', async (req, res) => {
+    try {
+        if (parserInstance) {
+            await parserInstance.stopMonitoring();
+            parserStats.isRunning = false;
+        }
+        res.json({ success: true });
+        
+    } catch (error) {
+        res.json({ success: false, error: error.message });
     }
 });
 
@@ -156,10 +272,17 @@ io.on('connection', (socket) => {
     socket.emit('stats', parserStats);
     socket.emit('parse-stats', parseTimeStats);
     
-    // Отправляем сохраненные логи при подключении
-    webLogs.forEach(log => {
-        socket.emit('log', log);
-    });
+// Отправляем сохраненные логи при подключении
+console.log(`Sending ${webLogs.length} saved logs to client`); // ОТЛАДКА
+webLogs.forEach(log => {
+    socket.emit('log', log);
+});
+
+// Отправляем сохраненные посты при подключении  
+console.log(`Sending ${recentPosts.length} saved posts to client`); // ОТЛАДКА
+recentPosts.forEach(post => {
+    socket.emit('new-post', post);
+});
     
     socket.on('clear-logs', () => {
         webLogs = [];
@@ -221,7 +344,25 @@ global.sendLogUpdate = (logData) => {
     // Отправляем лог клиентам
     io.emit('log', logData);
      savePersistedData();
+}; 
+
+
+// Перехватываем отправку постов для сохранения
+const originalEmit = io.emit;
+io.emit = function(event, data) {
+    if (event === 'new-post') {
+        // Сохраняем пост
+        recentPosts.unshift(data);
+        if (recentPosts.length > 100) {
+            recentPosts = recentPosts.slice(0, 100);
+        }
+        savePersistedData();
+    }
+    
+    return originalEmit.call(this, event, data);
 };
+
+
 
 async function startMonitoring() {
     try {
@@ -262,6 +403,8 @@ function shouldNotify(post, keywords) {
     const content = post.content.toLowerCase();
     return keywords.some(keyword => content.includes(keyword.toLowerCase()));
 }
+
+
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
