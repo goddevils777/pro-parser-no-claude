@@ -265,31 +265,79 @@ app.post('/api/parser/stop', async (req, res) => {
     }
 });
 
-// WebSocket для real-time обновлений
+// Добавить в app.js новый API endpoint
+app.get('/api/timing-stats', (req, res) => {
+    if (parserInstance) {
+        const timingStats = parserInstance.getPostTimingStats();
+        res.json(timingStats);
+    } else {
+        res.json({});
+    }
+});
+
+
+// Добавить в app.js новый API endpoint
+app.get('/api/tabs-stats', (req, res) => {
+    if (parserInstance) {
+        const tabsStats = parserInstance.getTabsStats();
+        res.json(tabsStats);
+    } else {
+        res.json({});
+    }
+});
+
+// Полная замена секции отправки постов в app.js (в io.on('connection'))
 io.on('connection', (socket) => {
     console.log('Client connected');
     
     socket.emit('stats', parserStats);
     socket.emit('parse-stats', parseTimeStats);
     
-// Отправляем сохраненные логи при подключении
-console.log(`Sending ${webLogs.length} saved logs to client`); // ОТЛАДКА
-webLogs.forEach(log => {
-    socket.emit('log', log);
-});
+    // Отправляем сохраненные логи при подключении
+    console.log(`Sending ${webLogs.length} saved logs to client`);
+    webLogs.forEach(log => {
+        socket.emit('log', log);
+    });
 
-// Отправляем сохраненные посты при подключении  
-console.log(`Sending ${recentPosts.length} saved posts to client`); // ОТЛАДКА
-recentPosts.forEach(post => {
-    socket.emit('new-post', post);
-});
+    // Отправляем сохраненные посты при подключении (ПРАВИЛЬНАЯ СОРТИРОВКА)
+    console.log(`Sending ${recentPosts.length} saved posts to client`);
+    
+    if (recentPosts.length > 0) {
+        // Сортируем посты: новые сначала (по убыванию времени)
+        const sortedPosts = [...recentPosts].sort((a, b) => {
+            const timeA = new Date(a.timestamp).getTime();
+            const timeB = new Date(b.timestamp).getTime();
+            return timeB - timeA; // Новые сначала (больший timestamp сверху)
+        });
+        
+        console.log(`Sorted posts: newest first - ${sortedPosts[0]?.timestamp}, oldest last - ${sortedPosts[sortedPosts.length-1]?.timestamp}`);
+        
+        // Отправляем ОДИН массив со всеми постами в правильном порядке
+        socket.emit('saved-posts', sortedPosts);
+    }
     
     socket.on('clear-logs', () => {
         webLogs = [];
         parseTimeStats = { min: Infinity, max: 0, total: 0, count: 0, average: 0 };
+        recentPosts = []; // Также очищаем посты
         io.emit('logs-cleared');
         io.emit('parse-stats', parseTimeStats);
-        savePersistedData(); // ДОБАВИТЬ ЭТУ СТРОКУ
+        savePersistedData();
+    });
+    
+    socket.on('clear-posts', () => {
+        console.log('Clearing recent posts...');
+        
+        // Очищаем массив постов
+        recentPosts = [];
+        
+        // Сохраняем изменения
+        savePersistedData();
+        
+        // Уведомляем всех клиентов об очистке постов
+        io.emit('posts-cleared');
+        
+        console.log('Recent posts cleared');
     });
     
     socket.on('disconnect', () => {
@@ -347,21 +395,27 @@ global.sendLogUpdate = (logData) => {
 }; 
 
 
+// Найти и заменить в app.js перехватчик emit
 // Перехватываем отправку постов для сохранения
 const originalEmit = io.emit;
 io.emit = function(event, data) {
     if (event === 'new-post') {
+        console.log('Saving new post:', data.username, data.content.substring(0, 50)); // Отладка
+        
         // Сохраняем пост
         recentPosts.unshift(data);
         if (recentPosts.length > 100) {
             recentPosts = recentPosts.slice(0, 100);
         }
+        
+        // Обновляем статистику
+        parserStats.totalPosts = (parserStats.totalPosts || 0) + 1;
+        
         savePersistedData();
     }
     
     return originalEmit.call(this, event, data);
 };
-
 
 
 async function startMonitoring() {

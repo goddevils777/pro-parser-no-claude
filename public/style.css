@@ -603,3 +603,319 @@ h1 {
         transform: translateY(-2px);
     }
 }
+
+/* === ИНФОРМАЦИОННЫЙ БЛОК === */
+.info-panel {
+    background: linear-gradient(135deg, #e3f2fd 0%, #f0f8ff 100%);
+    border: 2px solid #2196f3;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 4px 12px rgba(33, 150, 243, 0.1);
+}
+
+.info-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 10px 0;
+    font-size: 14px;
+    color: #1565c0;
+}
+
+.info-icon {
+    font-size: 16px;
+    width: 24px;
+    text-align: center;
+}
+
+.info-text {
+    line-height: 1.4;
+}
+
+.info-text strong {
+    color: #0d47a1;
+    font-weight: 600;
+}
+
+/* === УЛУЧШЕННЫЕ СТИЛИ ДЛЯ RECENT POSTS === */
+.recent-post {
+    border: 1px solid #e1e8ed;
+    border-radius: 8px;
+    margin: 8px 0;
+    padding: 12px;
+    background: white;
+    transition: all 0.3s ease;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.recent-post:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    border-color: #1da1f2;
+}
+
+.post-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.post-username {
+    font-weight: bold;
+    color: #1da1f2;
+    font-size: 14px;
+}
+
+.post-time {
+    font-size: 12px;
+    color: #657786;
+    background: #f7f9fa;
+    padding: 2px 6px;
+    border-radius: 10px;
+}
+
+.post-account {
+    font-size: 11px;
+    color: #aab8c2;
+    background: #e1e8ed;
+    padding: 2px 6px;
+    border-radius: 8px;
+}
+
+.post-content {
+    font-size: 14px;
+    line-height: 1.4;
+    color: #14171a;
+    margin: 8px 0;
+    padding: 8px;
+    background: #f8f9fa;
+    border-radius: 6px;
+    border-left: 3px solid #1da1f2;
+}
+
+.post-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    color: #aab8c2;
+    margin-top: 8px;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.post-ip {
+    background: #e8f5e8;
+    color: #2e7d32;
+    padding: 2px 6px;
+    border-radius: 6px;
+    font-family: monospace;
+}
+
+.post-selector {
+    background: #fff3e0;
+    color: #f57c00;
+    padding: 2px 6px;
+    border-radius: 6px;
+    font-family: monospace;
+    font-size: 10px;
+}
+
+/* === АНИМАЦИЯ ДЛЯ НОВЫХ ПОСТОВ === */
+.recent-post.new-post {
+    animation: slideInFromTop 0.5s ease-out;
+    border-color: #28a745;
+    background: linear-gradient(135deg, #f8fff9 0%, #e8f5e8 100%);
+}
+
+@keyframes slideInFromTop {
+    from {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* === RESPONSIVE === */
+@media (max-width: 768px) {
+    .post-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .post-footer {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .recent-post {
+        margin: 6px 0;
+        padding: 10px;
+    }
+}
+
+/* === ДОПОЛНИТЕЛЬНЫЕ СТИЛИ ДЛЯ ПОСТОВ === */
+.post-tab {
+    background: #e3f2fd;
+    color: #1976d2;
+    padding: 2px 6px;
+    border-radius: 6px;
+    font-family: monospace;
+    font-size: 10px;
+    font-weight: bold;
+}
+
+.post-attempts {
+    background: #f3e5f5;
+    color: #7b1fa2;
+    padding: 2px 6px;
+    border-radius: 6px;
+    font-size: 10px;
+}
+
+/* === КОНТЕЙНЕР ПОСТОВ === */
+.posts-container {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid #e1e8ed;
+    border-radius: 8px;
+    padding: 10px;
+    background: #fafafa;
+}
+.post-real-interval {
+    background: #e8f5e8;
+    color: #2e7d32;
+    padding: 2px 6px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: bold;
+    border: 1px solid #4caf50;
+}
+
+/* === СТАТУС-ПАНЕЛЬ === */
+.status-panel {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 15px;
+    padding: 15px;
+    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+    border: 2px solid #dee2e6;
+    border-radius: 12px;
+    margin-bottom: 20px;
+}
+
+.status-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 120px;
+    padding: 10px;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.status-label {
+    font-size: 12px;
+    color: #6c757d;
+    margin-bottom: 5px;
+    text-align: center;
+    font-weight: 500;
+}
+
+.status-value {
+    font-size: 18px;
+    font-weight: bold;
+    color: #495057;
+}
+
+.status-value.status-warning {
+    color: #fd7e14;
+}
+
+.status-value.status-success {
+    color: #28a745;
+}
+
+.status-badge {
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+.status-badge.status-ready {
+    background: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+}
+
+.status-badge.status-error {
+    background: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+}
+
+.status-badge.status-partial {
+    background: #fff3cd;
+    color: #856404;
+    border: 1px solid #ffeaa7;
+}
+
+/* === RESPONSIVE === */
+@media (max-width: 768px) {
+    .status-panel {
+        flex-direction: column;
+        gap: 10px;
+    }
+    
+    .status-item {
+        min-width: auto;
+        width: 100%;
+    }
+}
+
+/* === СТИЛИ ДЛЯ ТИПОВ ПОСТОВ === */
+.post-new {
+    background: #ff4757;
+    color: white;
+    padding: 2px 6px;
+    border-radius: 6px;
+    font-size: 10px;
+    font-weight: bold;
+    animation: pulse 2s infinite;
+}
+
+.post-saved {
+    background: #5f27cd;
+    color: white;
+    padding: 2px 6px;
+    border-radius: 6px;
+    font-size: 10px;
+    font-weight: bold;
+}
+
+.recent-post.new-post {
+    border-left: 4px solid #ff4757;
+    background: linear-gradient(135deg, #fff5f5 0%, #ffebee 100%);
+}
+
+.recent-post.saved-post {
+    border-left: 4px solid #5f27cd;
+    background: linear-gradient(135deg, #f8f9ff 0%, #f0f2ff 100%);
+    opacity: 0.95;
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.7; }
+    100% { opacity: 1; }
+}
