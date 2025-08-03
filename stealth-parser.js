@@ -11,7 +11,7 @@ class StealthParser {
         this.proxyManager = new ProxyManager('./port_list.txt');
         this.accountManager = new AccountManager(this.proxyManager);
         this.timingTracker = new PostTimingTracker();
-        this.tabParser = new TabParser(this.proxyManager, this.timingTracker);
+        this.tabParser = new TabParser(this.proxyManager, this.timingTracker, this.accountManager);
         
         // Активные интервалы мониторинга
         this.activeIntervals = new Map(); // username -> interval ID
@@ -22,10 +22,13 @@ class StealthParser {
     // =====================================
 
     async init() {
+        logger.info('🔍 STEALTH PARSER INIT STARTED');
         logger.info('Account management parser ready');
         
-        // Загружаем список авторизованных аккаунтов при старте
+        // Добавить отладку
+        logger.info('🔍 About to call loadAuthorizedAccounts...');
         await this.accountManager.loadAuthorizedAccounts();
+        logger.info('🔍 loadAuthorizedAccounts completed');
     }
 
     // =====================================
@@ -64,15 +67,85 @@ class StealthParser {
         return this.tabParser.getTabsStats();
     }
 
+    // Восстановление сессий для офлайн аккаунтов
+    async restoreOfflineAccountSessions() {
+        logger.info(`🔄 Checking for offline accounts to restore...`);
+        
+        let restored = 0;
+        for (const [username, account] of this.accountManager.authorizedAccounts) {
+            if (account.status === 'offline') {
+                const sessionPath = `./data/sessions/${username}-session.json`;
+                
+                if (await require('fs-extra').pathExists(sessionPath)) {
+                    try {
+                        logger.info(`🔄 Restoring session for ${username}...`);
+                        
+                        // Запускаем новый браузер с сохраненной сессией
+                        const browserData = await this.accountManager.findWorkingIP();
+                        
+                        // Восстанавливаем сессию
+                        await this.accountManager.restoreAccountSession(username, browserData.context, browserData.page);
+                        
+                        // Обновляем данные аккаунта
+                        account.browser = browserData.browser;
+                        account.context = browserData.context;
+                        account.page = browserData.page;
+                        account.proxy = browserData.proxy;
+                        account.proxyUrl = browserData.proxyUrl;
+                        account.status = 'authorized';
+                        
+                        // Отмечаем IP как используемый
+                        if (browserData.proxyUrl) {
+                            this.accountManager.proxyManager.markProxyAsUsed(browserData.proxyUrl);
+                        }
+                        
+                        restored++;
+                        logger.info(`✅ Session restored for ${username} with IP: ${browserData.proxy?.server}`);
+                        
+                    } catch (error) {
+                        logger.warn(`❌ Failed to restore session for ${username}: ${error.message}`);
+                    }
+                } else {
+                    logger.info(`💡 No saved session found for ${username}`);
+                }
+            }
+        }
+        
+        if (restored > 0) {
+            logger.info(`🎯 Successfully restored ${restored} account sessions`);
+        } else {
+            logger.info(`💡 No offline accounts to restore`);
+        }
+        
+        return restored;
+    }
+
     // =====================================
     // УПРАВЛЕНИЕ МОНИТОРИНГОМ
     // =====================================
 
     // Запуск мониторинга профилей
     async startMonitoring(profiles) {
-        // Получаем авторизованные аккаунты
+        // Сначала восстанавливаем сессии для офлайн аккаунтов и ЖДЕМ завершения
+        logger.info(`🔄 Checking for offline accounts to restore...`);
+        const restoredCount = await this.restoreOfflineAccountSessions();
+
+        if (restoredCount > 0) {
+            logger.info(`⏳ Waiting 5 seconds for restored sessions to stabilize...`);
+            await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+
+        // Теперь получаем авторизованные аккаунты
         const authorizedAccounts = this.accountManager.getAuthorizedAccounts();
-        const requiredAccounts = profiles.length * 3; // ВРЕМЕННО: 3 аккаунта на профиль для тестов
+
+        if (global.io) {
+            global.io.emit('log', {
+                level: 'info',
+                message: `📊 Found ${authorizedAccounts.length} authorized accounts ready for parsing`
+            });
+        }
+
+        const requiredAccounts = profiles.length * 7; // 7 аккаунтов на профиль
 
         if (authorizedAccounts.length === 0) {
             const message = 'No authorized accounts available. Please authorize at least one account first.';
@@ -88,9 +161,9 @@ class StealthParser {
         }
 
         if (authorizedAccounts.length < requiredAccounts) {
-            const message = `❌ INSUFFICIENT ACCOUNTS: Need ${requiredAccounts} accounts for ${profiles.length} profiles.\n\n📋 TEST MODE: 1 profile = 3 accounts (temporary for testing)\n\n📊 Currently have: ${authorizedAccounts.length} authorized accounts\n📊 Need to authorize: ${requiredAccounts - authorizedAccounts.length} more accounts\n\n💡 Please authorize more accounts before starting monitoring.`;
+            const message = `❌ INSUFFICIENT ACCOUNTS: Need ${requiredAccounts} accounts for ${profiles.length} profiles.\n\n📋 Current: 1 profile = 7 accounts\n\n📊 Currently have: ${authorizedAccounts.length} authorized accounts\n📊 Need to authorize: ${requiredAccounts - authorizedAccounts.length} more accounts\n\n💡 Please authorize more accounts before starting monitoring.`;
             
-            logger.error(`❌ INSUFFICIENT ACCOUNTS: Need ${requiredAccounts} accounts for ${profiles.length} profiles (3 accounts per profile). Currently have ${authorizedAccounts.length} accounts.`);
+            logger.error(`❌ INSUFFICIENT ACCOUNTS: Need ${requiredAccounts} accounts for ${profiles.length} profiles (7 accounts per profile). Currently have ${authorizedAccounts.length} accounts.`);
             
             if (global.io) {
                 global.io.emit('log', {
@@ -100,7 +173,7 @@ class StealthParser {
                 
                 global.io.emit('log', {
                     level: 'info',
-                    message: `📋 TEST MODE: 1 profile = 3 accounts (temporary for testing)`
+                    message: `📋 Current: 1 profile = 7 accounts`
                 });
                 
                 global.io.emit('log', {
@@ -122,31 +195,31 @@ class StealthParser {
             throw new Error(message);
         }
 
-        logger.info(`🚀 Starting TEST monitoring ${profiles.length} profiles with ${authorizedAccounts.length} authorized accounts (3 browsers per profile, 2 tabs max)`);
+        logger.info(`🚀 Starting monitoring ${profiles.length} profiles with ${authorizedAccounts.length} authorized accounts (7 browsers per profile, 2 tabs max)`);
 
-        // Разделяем аккаунты по профилям (по 3 аккаунта на профиль)
+        // Разделяем аккаунты по профилям (по 7 аккаунтов на профиль)
         let accountIndex = 0;
 
         for (const profile of profiles) {
             try {
-                // Берем 3 аккаунта для этого профиля
-                const profileAccounts = authorizedAccounts.slice(accountIndex, accountIndex + 3);
-                accountIndex += 3;
+                // Берем 7 аккаунтов для этого профиля
+                const profileAccounts = authorizedAccounts.slice(accountIndex, accountIndex + 7);
+                accountIndex += 7;
 
-                if (profileAccounts.length < 3) {
+                if (profileAccounts.length < 7) {
                     logger.warn(`⚠️ Only ${profileAccounts.length} accounts available for @${profile.username}`);
                 }
 
-                // Запускаем тестовый парсинг для этого профиля
+                // Запускаем парсинг для этого профиля
                 const interval = this.tabParser.startParallelParsing(profile.username, profileAccounts);
                 this.activeIntervals.set(profile.username, interval);
 
-                logger.info(`✅ Started TEST monitoring @${profile.username} with ${profileAccounts.length} accounts`);
+                logger.info(`✅ Started monitoring @${profile.username} with ${profileAccounts.length} accounts`);
 
                 if (global.io) {
                     global.io.emit('log', {
                         level: 'success',
-                        message: `✅ @${profile.username} TEST mode: ${profileAccounts.length} browsers × 2 tabs max`
+                        message: `✅ @${profile.username}: ${profileAccounts.length} browsers × 2 tabs max`
                     });
                 }
 
@@ -158,16 +231,16 @@ class StealthParser {
         if (global.io) {
             global.io.emit('log', {
                 level: 'success',
-                message: `🎯 TEST monitoring started: ${profiles.length} profiles with ${authorizedAccounts.length} accounts`
+                message: `🎯 Monitoring started: ${profiles.length} profiles with ${authorizedAccounts.length} accounts`
             });
             
             global.io.emit('log', {
                 level: 'info',
-                message: `⚡ TEST Speed: 3 browsers per profile, 2 tabs max per browser, 5 second intervals`
+                message: `⚡ Speed: 7 browsers per profile, 2 tabs max per browser, 5 second intervals`
             });
         }
 
-        logger.info(`🎯 All profiles ready for TEST monitoring!`);
+        logger.info(`🎯 All profiles ready for monitoring!`);
     }
 
     // Остановка мониторинга (НЕ закрывает авторизованные браузеры)

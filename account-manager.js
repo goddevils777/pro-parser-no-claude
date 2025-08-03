@@ -10,27 +10,52 @@ class AccountManager {
     }
 
     // Загрузка авторизованных аккаунтов из файла
-    async loadAuthorizedAccounts() {
-        try {
-            const accountsPath = './data/authorized-accounts.json';
-            if (await fs.pathExists(accountsPath)) {
-                const accounts = await fs.readJson(accountsPath);
-                
-                for (const account of accounts) {
-                    this.authorizedAccounts.set(account.username, {
-                        ...account,
-                        status: 'offline', // При загрузке все аккаунты offline
-                        browser: null,
-                        context: null
-                    });
-                }
-                
-                logger.info(`📋 Loaded ${accounts.length} authorized accounts from file`);
+async loadAuthorizedAccounts() {
+    // ДОБАВИТЬ В НАЧАЛО ФУНКЦИИ:
+    logger.info('🔍 Starting to load authorized accounts...');
+    
+    try {
+        const accountsPath = './data/authorized-accounts.json';
+        logger.info(`🔍 Checking file: ${accountsPath}`);
+        
+        if (await fs.pathExists(accountsPath)) {
+            logger.info('🔍 File exists, reading...');
+            const accounts = await fs.readJson(accountsPath);
+            logger.info(`🔍 Read ${accounts.length} accounts from file`);
+            
+            for (const account of accounts) {
+                this.authorizedAccounts.set(account.username, {
+                    ...account,
+                    status: 'offline', // При загрузке все аккаунты offline
+                    browser: null,
+                    context: null
+                });
             }
-        } catch (error) {
-            logger.warn(`Failed to load authorized accounts: ${error.message}`);
+            
+            logger.info(`📋 Loaded ${accounts.length} authorized accounts from file`);
+            
+            // Просто проверяем наличие сохраненных сессий (БЕЗ восстановления)
+            let sessionsFound = 0;
+            for (const account of accounts) {
+                const sessionPath = `./data/sessions/${account.username}-session.json`;
+                if (await fs.pathExists(sessionPath)) {
+                    sessionsFound++;
+                }
+            }
+            
+            if (sessionsFound > 0) {
+                logger.info(`💾 Found ${sessionsFound} saved sessions ready for restore when parser starts`);
+            } else {
+                logger.info(`💡 No saved sessions found - accounts will need fresh authorization`);
+            }
+            
+        } else {
+            logger.info(`📋 No authorized accounts file found - starting fresh`);
         }
+    } catch (error) {
+        logger.warn(`Failed to load authorized accounts: ${error.message}`);
     }
+}
 
     // Сохранение списка авторизованных аккаунтов
     async saveAuthorizedAccounts() {
@@ -53,6 +78,108 @@ class AccountManager {
             logger.error(`Failed to save authorized accounts: ${error.message}`);
         }
     }
+
+
+    // Сохранение полной сессии аккаунта (cookies + localStorage + sessionStorage)
+async saveAccountSession(username) {
+    try {
+        const account = this.authorizedAccounts.get(username);
+        if (!account || !account.context || !account.page) {
+            logger.warn(`Cannot save session for ${username} - missing context or page`);
+            return false;
+        }
+        
+        logger.info(`💾 Saving full session for ${username}...`);
+        
+        // Получаем все данные сессии
+        const cookies = await account.context.cookies();
+        const localStorage = await account.page.evaluate(() => JSON.stringify(localStorage));
+        const sessionStorage = await account.page.evaluate(() => JSON.stringify(sessionStorage));
+        
+        const sessionData = {
+            username: username,
+            cookies: cookies,
+            localStorage: localStorage,
+            sessionStorage: sessionStorage,
+            proxy: account.proxy,
+            fingerprint: account.fingerprint,
+            savedAt: new Date().toISOString()
+        };
+        
+        // Сохраняем в отдельный файл для каждого аккаунта
+        await fs.ensureDir('./data/sessions');
+        const sessionPath = `./data/sessions/${username}-session.json`;
+        await fs.writeJson(sessionPath, sessionData);
+        
+        logger.info(`✅ Session saved for ${username}: ${cookies.length} cookies, ${localStorage.length} chars localStorage`);
+        return true;
+        
+    } catch (error) {
+        logger.error(`❌ Failed to save session for ${username}: ${error.message}`);
+        return false;
+    }
+}
+
+// НАЙТИ И ЗАМЕНИТЬ функцию restoreAccountSession:
+async restoreAccountSession(username, context, page) {
+    try {
+        const sessionPath = `./data/sessions/${username}-session.json`;
+        
+        if (!await fs.pathExists(sessionPath)) {
+            logger.info(`No saved session found for ${username}`);
+            return false;
+        }
+        
+        logger.info(`🔄 Restoring session for ${username}...`);
+        
+        const sessionData = await fs.readJson(sessionPath);
+        
+        // СНАЧАЛА восстанавливаем localStorage и sessionStorage
+        if (sessionData.localStorage || sessionData.sessionStorage) {
+            logger.info(`📦 Restoring storage for ${username}: localStorage ${sessionData.localStorage?.length || 0} chars, sessionStorage ${sessionData.sessionStorage?.length || 0} chars`);
+            
+            await page.addInitScript(`
+                console.log('🔄 Restoring storage for ${username}...');
+                
+                // Очищаем существующие данные
+                localStorage.clear();
+                sessionStorage.clear();
+                
+                try {
+                    // Восстанавливаем localStorage
+                    const localStorageData = ${sessionData.localStorage || '{}'};
+                    for (const [key, value] of Object.entries(localStorageData)) {
+                        localStorage.setItem(key, value);
+                    }
+                    console.log('✅ localStorage restored:', Object.keys(localStorageData).length, 'items');
+                    
+                    // Восстанавливаем sessionStorage
+                    const sessionStorageData = ${sessionData.sessionStorage || '{}'};
+                    for (const [key, value] of Object.entries(sessionStorageData)) {
+                        sessionStorage.setItem(key, value);
+                    }
+                    console.log('✅ sessionStorage restored:', Object.keys(sessionStorageData).length, 'items');
+                    
+                } catch (e) {
+                    console.error('❌ Failed to restore storage:', e);
+                }
+            `);
+        }
+        
+        // ЗАТЕМ восстанавливаем cookies
+        if (sessionData.cookies && sessionData.cookies.length > 0) {
+            await context.addCookies(sessionData.cookies);
+            logger.info(`🍪 Restored ${sessionData.cookies.length} cookies for ${username}`);
+        }
+        
+        logger.info(`✅ Session restored for ${username}: ${sessionData.cookies?.length || 0} cookies + storage`);
+        return true;
+        
+    } catch (error) {
+        logger.error(`❌ Failed to restore session for ${username}: ${error.message}`);
+        return false;
+    }
+}
 
     // Поиск рабочего IP для авторизации
     async findWorkingIP() {
@@ -254,84 +381,210 @@ class AccountManager {
         }
     }
 
-    // Подтверждение авторизации
+
     async confirmAccountAuthorization(username) {
-        try {
-            const account = this.authorizedAccounts.get(username);
-            
-            if (!account || account.status !== 'authorizing') {
-                throw new Error(`Account ${username} is not in authorization process`);
-            }
-
-            logger.info(`✅ Confirming authorization for ${username}`);
-
-            // Получаем cookies и отпечаток браузера
-            const cookies = await account.context.cookies();
-            const fingerprint = await account.page.evaluate(() => {
-                return {
-                    userAgent: navigator.userAgent,
-                    language: navigator.language,
-                    languages: navigator.languages,
-                    platform: navigator.platform,
-                    cookieEnabled: navigator.cookieEnabled,
-                    doNotTrack: navigator.doNotTrack,
-                    hardwareConcurrency: navigator.hardwareConcurrency,
-                    maxTouchPoints: navigator.maxTouchPoints,
-                    vendor: navigator.vendor,
-                    webdriver: navigator.webdriver,
-                    screenWidth: screen.width,
-                    screenHeight: screen.height,
-                    colorDepth: screen.colorDepth,
-                    pixelDepth: screen.pixelDepth,
-                    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
-                };
-            });
-
-            // Обновляем данные аккаунта
-            account.status = 'authorized';
-            account.authorizedAt = Date.now();
-            account.cookies = cookies;
-            account.fingerprint = fingerprint;
-
-            // Сохраняем в файл
-            await this.saveAuthorizedAccounts();
-
-            logger.info(`💾 Account ${username} authorized successfully with ${cookies.length} cookies`);
-
-            if (global.io) {
-                global.io.emit('log', {
-                    level: 'success',
-                    message: `✅ Account ${username} authorized successfully!`
-                });
-                
-                global.io.emit('account-status', {
-                    username: username,
-                    status: 'authorized'
-                });
-            }
-
-            return {
-                success: true,
-                message: `Account ${username} authorized successfully`,
-                cookiesCount: cookies.length
-            };
-
-        } catch (error) {
-            logger.error(`❌ Failed to confirm authorization for ${username}: ${error.message}`);
-            
-            if (global.io) {
-                global.io.emit('log', {
-                    level: 'error',
-                    message: `❌ Failed to confirm authorization for ${username}: ${error.message}`
-                });
-            }
-
-            return {
-                success: false,
-                message: error.message
-            };
+    try {
+        const account = this.authorizedAccounts.get(username);
+        
+        if (!account || account.status !== 'authorizing') {
+            throw new Error(`Account ${username} is not in authorization process`);
         }
+
+        logger.info(`✅ Confirming authorization for ${username}`);
+
+        // Получаем cookies и отпечаток браузера
+        const cookies = await account.context.cookies();
+        const fingerprint = await account.page.evaluate(() => {
+            return {
+                userAgent: navigator.userAgent,
+                language: navigator.language,
+                languages: navigator.languages,
+                platform: navigator.platform,
+                cookieEnabled: navigator.cookieEnabled,
+                doNotTrack: navigator.doNotTrack,
+                hardwareConcurrency: navigator.hardwareConcurrency,
+                maxTouchPoints: navigator.maxTouchPoints,
+                vendor: navigator.vendor,
+                webdriver: navigator.webdriver,
+                screenWidth: screen.width,
+                screenHeight: screen.height,
+                colorDepth: screen.colorDepth,
+                pixelDepth: screen.pixelDepth,
+                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+            };
+        });
+
+        // Определяем реальный username из Truth Social
+        const realUsername = await account.page.evaluate(() => {
+            // Ищем username в различных местах на странице
+            const selectors = [
+                '[data-testid="UserName"]',
+                '.profile-header .username',
+                'meta[property="og:url"]',
+                'link[rel="canonical"]',
+                '.user-profile .username',
+                '[class*="username"]',
+                'meta[name="twitter:creator"]'
+            ];
+            
+            for (const selector of selectors) {
+                const element = document.querySelector(selector);
+                if (element) {
+                    let username = element.textContent || element.getAttribute('content') || element.getAttribute('href');
+                    if (username && username.includes('@')) {
+                        // Извлекаем username из URL или текста
+                        const match = username.match(/@([a-zA-Z0-9_]+)/);
+                        if (match) return match[1];
+                    }
+                }
+            }
+            
+            // Пробуем из URL
+            const url = window.location.href;
+            const urlMatch = url.match(/truthsocial\.com\/@([a-zA-Z0-9_]+)/);
+            if (urlMatch) return urlMatch[1];
+            
+            // Ищем в заголовке страницы
+            const title = document.title;
+            const titleMatch = title.match(/@([a-zA-Z0-9_]+)/);
+            if (titleMatch) return titleMatch[1];
+            
+            return null;
+        });
+
+        logger.info(`🔍 Detected real username: ${realUsername || 'unknown'} for session: ${username}`);
+
+
+
+        // Обновляем данные аккаунта
+        account.status = 'authorized';
+        account.authorizedAt = Date.now();
+        account.cookies = cookies;
+        account.fingerprint = fingerprint;
+        account.realUsername = realUsername; // ДОБАВЛЯЕМ РЕАЛЬНЫЙ USERNAME
+
+        // АВТОМАТИЧЕСКИ СОХРАНЯЕМ ПОЛНУЮ СЕССИЮ
+        const sessionSaved = await this.saveAccountSession(username);
+
+        // Сохраняем в файл со списком аккаунтов
+        await this.saveAuthorizedAccounts();
+
+        logger.info(`💾 Account ${username} (real: @${realUsername || 'unknown'}) authorized successfully with ${cookies.length} cookies${sessionSaved ? ' + session saved' : ''}`);
+
+        if (global.io) {
+            global.io.emit('log', {
+                level: 'success',
+                message: `✅ Account ${username} authorized as @${realUsername || 'unknown'} + session auto-saved!`
+            });
+            
+            global.io.emit('account-status', {
+                username: username,
+                status: 'authorized',
+                realUsername: realUsername
+            });
+        }
+
+        return {
+            success: true,
+            message: `Account ${username} authorized as @${realUsername || 'unknown'}`,
+            cookiesCount: cookies.length,
+            sessionSaved: sessionSaved,
+            realUsername: realUsername
+        };
+
+    } catch (error) {
+        logger.error(`❌ Failed to confirm authorization for ${username}: ${error.message}`);
+        
+        if (global.io) {
+            global.io.emit('log', {
+                level: 'error',
+                message: `❌ Failed to confirm authorization for ${username}: ${error.message}`
+            });
+        }
+
+        return {
+            success: false,
+            message: error.message
+        };
     }
+}
+
+
+    // В account-manager.js добавить новый метод:
+// Добавить в account-manager.js после функции removeAccount()
+async switchProxyForAccount(username) {
+    const account = this.authorizedAccounts.get(username);
+    if (!account || !account.browser) {
+        logger.warn(`❌ Cannot switch IP for ${username} - account not found or browser closed`);
+        return false;
+    }
+    
+    const oldIP = account.proxy?.server;
+    logger.info(`🔄 Switching IP for ${username} from ${oldIP}...`);
+    
+    try {
+        // Освобождаем старый IP
+        if (account.proxyUrl) {
+            this.proxyManager.releaseProxy(account.proxyUrl);
+        }
+        
+        // Получаем новый IP
+        const newProxy = this.getNextProxy();
+        if (!newProxy) {
+            logger.error(`❌ No available IP for ${username} - cannot switch`);
+            return false;
+        }
+        
+        const newProxyData = this.proxyManager.parseProxy(newProxy);
+        logger.info(`🆕 New IP for ${username}: ${newProxyData.server}`);
+        
+        // Создаем новый контекст с новым IP
+        const newContext = await account.browser.newContext({
+            userAgent: account.fingerprint?.userAgent || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            viewport: { width: 1280, height: 720 },
+            proxy: newProxyData
+        });
+
+        const tempPage = await newContext.newPage();
+
+        // Восстанавливаем сессию в новом контексте
+        await this.restoreAccountSession(username, newContext, tempPage);
+        
+        // Восстанавливаем cookies если есть
+        if (account.cookies && account.cookies.length > 0) {
+            await newContext.addCookies(account.cookies);
+            logger.info(`🍪 Restored ${account.cookies.length} cookies for ${username}`);
+        }
+        
+        // Закрываем старый контекст
+        if (account.context) {
+            await account.context.close();
+        }
+        
+        // Обновляем данные аккаунта
+        account.context = newContext;
+        account.proxy = newProxyData;
+        account.proxyUrl = newProxy;
+        
+        // Отмечаем новый IP как используемый
+        this.proxyManager.markProxyAsUsed(newProxy);
+        
+        logger.info(`✅ Successfully switched IP for ${username}: ${oldIP} → ${newProxyData.server}`);
+        
+        if (global.io) {
+            global.io.emit('log', {
+                level: 'success',
+                message: `✅ ${username} switched IP: ${oldIP} → ${newProxyData.server}`
+            });
+        }
+        
+        return true;
+        
+    } catch (error) {
+        logger.error(`❌ Failed to switch IP for ${username}: ${error.message}`);
+        return false;
+    }
+}
 
     // Удаление аккаунта
     async removeAccount(username) {
@@ -354,16 +607,28 @@ class AccountManager {
         
         this.authorizedAccounts.delete(username);
         await this.saveAuthorizedAccounts();
+
+        try {
+            const sessionPath = `./data/sessions/${username}-session.json`;
+            if (await fs.pathExists(sessionPath)) {
+                await fs.remove(sessionPath);
+                logger.info(`🗑️ Deleted session file for ${username}`);
+            }
+        } catch (error) {
+            logger.warn(`Failed to delete session file for ${username}: ${error.message}`);
+        }
         
-        logger.info(`🗑️ Removed account: ${username} and released its IP`);
+        logger.info(`🗑️ Removed account: ${username}, released IP and deleted session file`);
         
         if (global.io) {
             global.io.emit('log', {
                 level: 'info',
-                message: `🗑️ Removed account: ${username} and released its IP`
+                message: `🗑️ Removed account: ${username}, released IP and deleted session`
             });
         }
     }
+
+
 
     // Получение списка аккаунтов для веб-интерфейса
     getAccountsList() {

@@ -12,7 +12,6 @@ app.set('view engine', 'ejs');
 app.use(express.static('public'));
 app.use(express.json());
 
-let parserInstance = null;
 let parserStats = {
     isRunning: false,
     totalPosts: 0,
@@ -36,7 +35,6 @@ async function loadPersistedData() {
         }));
         recentPosts = await fs.readJson('./data/recent-posts.json').catch(() => []);
         
-        // ОТЛАДКА
         console.log(`Loaded ${webLogs.length} logs, ${recentPosts.length} posts`);
         
     } catch (error) {
@@ -49,7 +47,7 @@ async function savePersistedData() {
     try {
         await fs.writeJson('./data/web-logs.json', webLogs);
         await fs.writeJson('./data/parse-stats.json', parseTimeStats);
-        await fs.writeJson('./data/recent-posts.json', recentPosts); // ДОБАВЬ ЭТУ СТРОКУ
+        await fs.writeJson('./data/recent-posts.json', recentPosts);
     } catch (error) {
         console.error('Failed to save data:', error);
     }
@@ -95,18 +93,18 @@ app.delete('/api/profiles/:index', async (req, res) => {
     }
 });
 
-// Замени app.post('/api/parser/start') на:
+// Запуск парсера
 app.post('/api/parser/start', async (req, res) => {
     try {
         // Принудительно останавливаем старый парсер если есть
-        if (parserInstance) {
-            await parserInstance.stopMonitoring();
+        if (global.parserInstance) {
+            await global.parserInstance.stopMonitoring();
         }
         
-        if (!parserInstance) {
+        if (!global.parserInstance) {
             const StealthParser = require('./stealth-parser');
-            parserInstance = new StealthParser();
-            await parserInstance.init();
+            global.parserInstance = new StealthParser();
+            await global.parserInstance.init();
             global.io = io;
         }
         
@@ -117,7 +115,7 @@ app.post('/api/parser/start', async (req, res) => {
         }
         
         // Запускаем мониторинг
-        await parserInstance.startMonitoring(profiles);
+        await global.parserInstance.startMonitoring(profiles);
         
         parserStats.isRunning = true;
         parserStats.startTime = Date.now();
@@ -129,11 +127,12 @@ app.post('/api/parser/start', async (req, res) => {
     }
 });
 
+// Остановка парсера
 app.post('/api/parser/stop', async (req, res) => {
     try {
-        if (parserInstance) {
-            await parserInstance.stopMonitoring();
-            parserStats.isRunning = false; // ВАЖНО!
+        if (global.parserInstance) {
+            await global.parserInstance.stopMonitoring();
+            parserStats.isRunning = false;
             
             // Отправляем обновленный статус клиентам
             io.emit('stats', parserStats);
@@ -150,14 +149,20 @@ app.post('/api/parser/stop', async (req, res) => {
     }
 });
 
-// === НОВЫЕ API ДЛЯ УПРАВЛЕНИЯ АККАУНТАМИ ===
+// === API ДЛЯ УПРАВЛЕНИЯ АККАУНТАМИ ===
 
 // Получение списка аккаунтов
 app.get('/api/accounts', (req, res) => {
-    if (parserInstance) {
-        const accounts = parserInstance.getAccountsList();
+    console.log('🔍 API /api/accounts called');
+    console.log('🔍 global.parserInstance exists:', !!global.parserInstance);
+    
+    if (global.parserInstance) {
+        console.log('🔍 Calling getAccountsList...');
+        const accounts = global.parserInstance.getAccountsList();
+        console.log(`🔍 getAccountsList returned ${accounts.length} accounts:`, accounts);
         res.json(accounts);
     } else {
+        console.log('🔍 No global.parserInstance found, returning empty array');
         res.json([]);
     }
 });
@@ -171,14 +176,14 @@ app.post('/api/accounts/authorize', async (req, res) => {
     }
     
     try {
-        if (!parserInstance) {
+        if (!global.parserInstance) {
             const StealthParser = require('./stealth-parser');
-            parserInstance = new StealthParser();
-            await parserInstance.init();
+            global.parserInstance = new StealthParser();
+            await global.parserInstance.init();
             global.io = io;
         }
         
-        const result = await parserInstance.startAccountAuthorization(username);
+        const result = await global.parserInstance.startAccountAuthorization(username);
         res.json(result);
         
     } catch (error) {
@@ -195,11 +200,11 @@ app.post('/api/accounts/confirm', async (req, res) => {
     }
     
     try {
-        if (!parserInstance) {
+        if (!global.parserInstance) {
             return res.json({ success: false, error: 'Parser not initialized' });
         }
         
-        const result = await parserInstance.confirmAccountAuthorization(username);
+        const result = await global.parserInstance.confirmAccountAuthorization(username);
         res.json(result);
         
     } catch (error) {
@@ -212,8 +217,8 @@ app.delete('/api/accounts/:username', async (req, res) => {
     const { username } = req.params;
     
     try {
-        if (parserInstance) {
-            await parserInstance.removeAccount(username);
+        if (global.parserInstance) {
+            await global.parserInstance.removeAccount(username);
         }
         res.json({ success: true });
         
@@ -222,71 +227,142 @@ app.delete('/api/accounts/:username', async (req, res) => {
     }
 });
 
-// Изменение логики запуска парсера
-app.post('/api/parser/start', async (req, res) => {
-    try {
-        if (!parserInstance) {
-            const StealthParser = require('./stealth-parser');
-            parserInstance = new StealthParser();
-            await parserInstance.init();
-            global.io = io;
-        }
-        
-        const profiles = await fs.readJson('./data/profiles.json').catch(() => []);
-        
-        if (profiles.length === 0) {
-            return res.json({ success: false, error: 'No profiles to monitor' });
-        }
-        
-        // Запускаем мониторинг
-        await parserInstance.startMonitoring(profiles);
-        
-        parserStats.isRunning = true;
-        parserStats.startTime = Date.now();
-        
-        res.json({ success: true });
-        
-    } catch (error) {
-        res.json({ success: false, error: error.message });
-    }
-});
-
-// Остановка парсера (не закрывает авторизованные браузеры)
-app.post('/api/parser/stop', async (req, res) => {
-    try {
-        if (parserInstance) {
-            await parserInstance.stopMonitoring();
-            parserStats.isRunning = false;
-        }
-        res.json({ success: true });
-        
-    } catch (error) {
-        res.json({ success: false, error: error.message });
-    }
-});
-
-// Добавить в app.js новый API endpoint
+// Статистика времени постов
 app.get('/api/timing-stats', (req, res) => {
-    if (parserInstance) {
-        const timingStats = parserInstance.getPostTimingStats();
+    if (global.parserInstance) {
+        const timingStats = global.parserInstance.getPostTimingStats();
         res.json(timingStats);
     } else {
         res.json({});
     }
 });
 
-
-// Добавить в app.js новый API endpoint
+// Статистика вкладок
 app.get('/api/tabs-stats', (req, res) => {
-    if (parserInstance) {
-        const tabsStats = parserInstance.getTabsStats();
+    if (global.parserInstance) {
+        const tabsStats = global.parserInstance.getTabsStats();
         res.json(tabsStats);
     } else {
         res.json({});
     }
 });
 
-// Полная замена секции отправки постов в app.js (в io.on('connection'))
+// === API ДЛЯ УПРАВЛЕНИЯ СЕССИЯМИ ===
+
+// Проверка наличия сохраненной сессии
+app.get('/api/sessions/check/:username', async (req, res) => {
+    const { username } = req.params;
+    
+    try {
+        const sessionPath = `./data/sessions/${username}-session.json`;
+        const hasSession = await fs.pathExists(sessionPath);
+        
+        if (hasSession) {
+            const sessionData = await fs.readJson(sessionPath);
+            res.json({
+                hasSession: true,
+                savedAt: new Date(sessionData.savedAt).toLocaleDateString(),
+                cookiesCount: sessionData.cookies?.length || 0
+            });
+        } else {
+            res.json({ hasSession: false });
+        }
+    } catch (error) {
+        res.json({ hasSession: false, error: error.message });
+    }
+});
+
+// Тестирование сессии (открыть браузер на 10 секунд)
+app.post('/api/sessions/test/:username', async (req, res) => {
+    const { username } = req.params;
+    
+    try {
+        const sessionPath = `./data/sessions/${username}-session.json`;
+        
+        if (!await fs.pathExists(sessionPath)) {
+            return res.json({ success: false, error: 'No saved session found' });
+        }
+        
+        const sessionData = await fs.readJson(sessionPath);
+        
+        // Получаем рабочий IP через global.parserInstance
+        let proxy = null;
+        if (global.parserInstance && global.parserInstance.proxyManager) {
+            const proxyUrl = global.parserInstance.proxyManager.getNextProxy();
+            proxy = proxyUrl ? global.parserInstance.proxyManager.parseProxy(proxyUrl) : null;
+        }
+        
+        console.log(`🧪 Testing session for ${username} with IP: ${proxy?.server || 'direct'}`);
+        
+        // Запускаем браузер для теста
+        const { chromium } = require('playwright');
+        const browser = await chromium.launch({
+            headless: false,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        });
+
+        const context = await browser.newContext({
+            userAgent: sessionData.userAgent,
+            viewport: { width: 1280, height: 720 },
+            proxy: proxy
+        });
+        
+        // Восстанавливаем cookies
+        await context.addCookies(sessionData.cookies);
+        
+        const page = await context.newPage();
+        
+        // Восстанавливаем localStorage и sessionStorage
+        await page.addInitScript(`
+            localStorage.clear();
+            sessionStorage.clear();
+            Object.assign(localStorage, ${sessionData.localStorage});
+            Object.assign(sessionStorage, ${sessionData.sessionStorage});
+        `);
+        
+        // Переходим на сайт
+        await page.goto('https://truthsocial.com/', { 
+            waitUntil: 'domcontentloaded',
+            timeout: 15000 
+        });
+        
+        // Ждем 3 секунды загрузки
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        // Проверяем авторизацию
+        const authCheck = await page.evaluate(() => {
+            const bodyText = document.body.textContent;
+            return {
+                isLoggedIn: !bodyText.includes('Sign in') && 
+                           !bodyText.includes('Log in') &&
+                           !bodyText.includes('Create account'),
+                title: document.title,
+                url: window.location.href
+            };
+        });
+        
+        console.log(`🔍 Session test result for ${username}: ${authCheck.isLoggedIn ? 'VALID' : 'INVALID'}`);
+        
+        // Показываем результат на 7 секунд
+        await new Promise(resolve => setTimeout(resolve, 7000));
+        
+        // Закрываем браузер
+        await browser.close();
+        
+        res.json({
+            success: true,
+            isValid: authCheck.isLoggedIn,
+            details: authCheck
+        });
+        
+    } catch (error) {
+        console.error(`❌ Session test error for ${username}:`, error);
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// === WEBSOCKET ОБРАБОТКА ===
+
 io.on('connection', (socket) => {
     console.log('Client connected');
     
@@ -299,7 +375,7 @@ io.on('connection', (socket) => {
         socket.emit('log', log);
     });
 
-    // Отправляем сохраненные посты при подключении (ПРАВИЛЬНАЯ СОРТИРОВКА)
+    // Отправляем сохраненные посты при подключении
     console.log(`Sending ${recentPosts.length} saved posts to client`);
     
     if (recentPosts.length > 0) {
@@ -307,19 +383,18 @@ io.on('connection', (socket) => {
         const sortedPosts = [...recentPosts].sort((a, b) => {
             const timeA = new Date(a.timestamp).getTime();
             const timeB = new Date(b.timestamp).getTime();
-            return timeB - timeA; // Новые сначала (больший timestamp сверху)
+            return timeB - timeA; // Новые сначала
         });
         
         console.log(`Sorted posts: newest first - ${sortedPosts[0]?.timestamp}, oldest last - ${sortedPosts[sortedPosts.length-1]?.timestamp}`);
         
-        // Отправляем ОДИН массив со всеми постами в правильном порядке
         socket.emit('saved-posts', sortedPosts);
     }
     
     socket.on('clear-logs', () => {
         webLogs = [];
         parseTimeStats = { min: Infinity, max: 0, total: 0, count: 0, average: 0 };
-        recentPosts = []; // Также очищаем посты
+        recentPosts = [];
         io.emit('logs-cleared');
         io.emit('parse-stats', parseTimeStats);
         savePersistedData();
@@ -327,16 +402,9 @@ io.on('connection', (socket) => {
     
     socket.on('clear-posts', () => {
         console.log('Clearing recent posts...');
-        
-        // Очищаем массив постов
         recentPosts = [];
-        
-        // Сохраняем изменения
         savePersistedData();
-        
-        // Уведомляем всех клиентов об очистке постов
         io.emit('posts-cleared');
-        
         console.log('Recent posts cleared');
     });
     
@@ -377,7 +445,7 @@ global.sendLogUpdate = (logData) => {
         if (username && !firstRequestSkipped.get(username)) {
             firstRequestSkipped.set(username, true);
             console.log(`Skipping first request for @${username}: ${parseTime}ms`);
-            return; // Не учитываем в статистике
+            return;
         }
         
         parseTimeStats.min = Math.min(parseTimeStats.min, parseTime);
@@ -391,16 +459,14 @@ global.sendLogUpdate = (logData) => {
     
     // Отправляем лог клиентам
     io.emit('log', logData);
-     savePersistedData();
+    savePersistedData();
 }; 
 
-
-// Найти и заменить в app.js перехватчик emit
 // Перехватываем отправку постов для сохранения
 const originalEmit = io.emit;
 io.emit = function(event, data) {
     if (event === 'new-post') {
-        console.log('Saving new post:', data.username, data.content.substring(0, 50)); // Отладка
+        console.log('Saving new post:', data.username, data.content.substring(0, 50));
         
         // Сохраняем пост
         recentPosts.unshift(data);
@@ -417,50 +483,20 @@ io.emit = function(event, data) {
     return originalEmit.call(this, event, data);
 };
 
-
-async function startMonitoring() {
-    try {
-        const profiles = await fs.readJson('./data/profiles.json').catch(() => []);
-        
-        if (profiles.length === 0) {
-            io.emit('log', {
-                level: 'warning',
-                message: 'No profiles to monitor. Add profiles first.'
-            });
-            return;
-        }
-        
-        
-        parserStats.isRunning = true;
-        io.emit('stats', parserStats);
-        
-        // Используем новую параллельную логику
-        await parserInstance.startParallelParsing(profiles);
-        
-        io.emit('log', {
-            level: 'success',
-            message: `✅ All sessions created. Monitoring ${profiles.length} profiles every 0.5s`
-        });
-        
-    } catch (error) {
-        console.error('Monitoring error:', error);
-        io.emit('log', {
-            level: 'warning',
-            message: 'Failed to start monitoring. Check console for details.'
-        });
-    }
-}
-
-function shouldNotify(post, keywords) {
-    if (!keywords || keywords.length === 0) return true;
-    
-    const content = post.content.toLowerCase();
-    return keywords.some(keyword => content.includes(keyword.toLowerCase()));
-}
-
-
-
+// === ЗАПУСК СЕРВЕРА ===
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
     console.log(`Web interface running on http://localhost:${PORT}`);
+    
+    // Инициализация парсера при старте сервера
+    console.log('🔍 Initializing parser at server startup...');
+    try {
+        const StealthParser = require('./stealth-parser');
+        global.parserInstance = new StealthParser();
+        await global.parserInstance.init();
+        global.io = io;
+        console.log('✅ Parser initialized at startup');
+    } catch (error) {
+        console.error('❌ Failed to initialize parser:', error);
+    }
 });

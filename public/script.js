@@ -26,6 +26,14 @@ const requiredCountStatus = document.getElementById('required-count-status');
 const stillNeedStatus = document.getElementById('still-need-status');
 const readinessStatus = document.getElementById('readiness-status');
 
+// НОВЫЕ элементы для Real Interval статистики
+const activeAccountsCount = document.getElementById('active-accounts-count');
+const avgRealInterval = document.getElementById('avg-real-interval');
+const minRealInterval = document.getElementById('min-real-interval');
+const maxRealInterval = document.getElementById('max-real-interval');
+
+// Переменные для отслеживания статистики
+let realIntervals = [];
 
 // WebSocket events
 socket.on('stats', (stats) => {
@@ -59,10 +67,9 @@ usernameInput.addEventListener('keypress', (e) => {
 });
 
 // Функции управления парсером
-// Заменить функцию startParser в public/script.js
 async function startParser() {
     try {
-        console.log('Starting parser...'); // ОТЛАДКА
+        console.log('Starting parser...');
         
         startBtn.disabled = true;
         startBtn.textContent = 'Starting...';
@@ -70,21 +77,18 @@ async function startParser() {
         const response = await fetch('/api/parser/start', { method: 'POST' });
         const result = await response.json();
         
-        console.log('Start result:', result); // ОТЛАДКА
+        console.log('Start result:', result);
         
         if (result.success) {
             addLogToUI({ level: 'success', message: 'Parser started successfully' });
         } else {
-            console.error('Start failed:', result.error); // ОТЛАДКА
+            console.error('Start failed:', result.error);
             
-            // Показываем ошибку в логах вместо alert
             addLogToUI({ 
                 level: 'error', 
                 message: `❌ Failed to start parser: ${result.error}` 
             });
             
-            // Если ошибка связана с аккаунтами, показываем дополнительную информацию
-// Если ошибка связана с аккаунтами, показываем дополнительную информацию
             if (result.error.includes('INSUFFICIENT ACCOUNTS') || result.error.includes('Need') || result.error.includes('accounts')) {
                 addLogToUI({ 
                     level: 'warning', 
@@ -102,12 +106,11 @@ async function startParser() {
                 });
             }
             
-            // Возвращаем кнопку в исходное состояние
             startBtn.disabled = false;
             startBtn.textContent = 'Start Parser';
         }
     } catch (error) {
-        console.error('Start error:', error); // ОТЛАДКА
+        console.error('Start error:', error);
         
         startBtn.disabled = false;
         startBtn.textContent = 'Start Parser';
@@ -121,17 +124,16 @@ async function startParser() {
 
 async function stopParser() {
     try {
-        console.log('Stopping parser...'); // ОТЛАДКА
+        console.log('Stopping parser...');
         
         const response = await fetch('/api/parser/stop', { method: 'POST' });
         const result = await response.json();
         
-        console.log('Stop result:', result); // ОТЛАДКА
+        console.log('Stop result:', result);
         
         if (result.success) {
             addLogToUI({ level: 'info', message: 'Parser stopped' });
             
-            // Принудительно обновляем кнопки
             startBtn.disabled = false;
             startBtn.textContent = 'Start Parser';
             stopBtn.disabled = true;
@@ -140,7 +142,7 @@ async function stopParser() {
             addLogToUI({ level: 'error', message: 'Failed to stop: ' + result.error });
         }
     } catch (error) {
-        console.log('Stop error:', error); // ОТЛАДКА
+        console.log('Stop error:', error);
         addLogToUI({ level: 'error', message: 'Failed to stop parser: ' + error.message });
     }
 }
@@ -189,36 +191,45 @@ async function deleteProfile(index) {
     }
 }
 
+// НАЙТИ функцию loadProfiles и ЗАМЕНИТЬ НА:
 async function loadProfiles() {
     try {
         const response = await fetch('/api/profiles');
         const profiles = await response.json();
         
-        profilesList.innerHTML = '';
-        profilesCount.textContent = profiles.length;
+        // Добавляем проверки на существование элементов
+        if (profilesList) {
+            profilesList.innerHTML = '';
+        }
         
-        profiles.forEach((profile, index) => {
-            const profileDiv = document.createElement('div');
-            profileDiv.className = 'profile-item';
-            profileDiv.innerHTML = `
-                <div class="profile-info">
-                    <div class="profile-username">@${profile.username}</div>
-                    <div class="profile-keywords">
-                        Keywords: ${profile.keywords.length > 0 ? profile.keywords.join(', ') : 'All posts'}
+        if (profilesCount) {
+            profilesCount.textContent = profiles.length;
+        }
+        
+        if (profilesList) {
+            profiles.forEach((profile, index) => {
+                const profileDiv = document.createElement('div');
+                profileDiv.className = 'profile-item';
+                profileDiv.innerHTML = `
+                    <div class="profile-info">
+                        <div class="profile-username">@${profile.username}</div>
+                        <div class="profile-keywords">
+                            Keywords: ${profile.keywords.length > 0 ? profile.keywords.join(', ') : 'All posts'}
+                        </div>
                     </div>
-                </div>
-                <button class="delete-btn" onclick="deleteProfile(${index})">Delete</button>
-            `;
-            profilesList.appendChild(profileDiv);
-        });
+                    <button class="delete-btn" onclick="deleteProfile(${index})">Delete</button>
+                `;
+                profilesList.appendChild(profileDiv);
+            });
+        }
     } catch (error) {
+        console.error('Failed to load profiles:', error);
         addLogToUI({ level: 'error', message: 'Failed to load profiles: ' + error.message });
     }
 }
 
 // Функции обновления UI
 function updateStats(stats) {
-    // Добавляем проверки на существование элементов
     if (parserStatus) parserStatus.textContent = stats.isRunning ? 'running' : 'stopped';
     if (totalPosts) totalPosts.textContent = stats.totalPosts || 0;
     if (totalErrors) totalErrors.textContent = stats.errors || 0;
@@ -238,7 +249,6 @@ function updateStats(stats) {
         if (stopBtn) stopBtn.disabled = true;
     }
     
-    // Остальные расчеты с проверками
     if (postsPerHour) {
         const postsPerHourValue = stats.totalPosts > 0 ? Math.round(stats.totalPosts * (3600000 / (Date.now() - (stats.startTime || Date.now())))) : 0;
         postsPerHour.textContent = postsPerHourValue;
@@ -251,7 +261,7 @@ function updateStats(stats) {
     }
 }
 
-// Заменить функцию addPostToUI в public/script.js (только для НОВЫХ постов)
+// ОБНОВЛЕННАЯ функция addPostToUI с сбором статистики Real Interval
 function addPostToUI(post) {
     console.log('Adding NEW post to UI:', post.username, post.timestamp);
     
@@ -261,42 +271,48 @@ function addPostToUI(post) {
     }
     
     const postElement = document.createElement('div');
-    postElement.className = 'recent-post new-post'; // Класс для новых постов
+    postElement.className = 'recent-post new-post';
     
-    // Форматируем время
     const time = new Date(post.timestamp).toLocaleTimeString();
     const currentPostTime = new Date(post.timestamp).getTime();
     
-    // Вычисляем РЕАЛЬНЫЙ интервал с предыдущим постом (ТОЛЬКО БОЛЕЕ СТАРЫЕ)
+    // Вычисляем РЕАЛЬНЫЙ интервал с предыдущим постом
     const existingPosts = Array.from(recentPosts.children);
     let realInterval = null;
     
     if (existingPosts.length > 0) {
-        // Ищем предыдущий пост от того же пользователя (ТОЛЬКО БОЛЕЕ СТАРЫЕ)
         for (let i = 0; i < existingPosts.length; i++) {
             const existingPost = existingPosts[i];
             const existingUsername = existingPost.querySelector('.post-username')?.textContent;
             
             if (existingUsername === `@${post.username}`) {
-                // Нашли пост от этого пользователя
                 const existingTimeStr = existingPost.querySelector('.post-time')?.dataset.timestamp;
                 if (existingTimeStr) {
                     const existingTime = parseInt(existingTimeStr);
                     
-                    // ВАЖНО: Берем только БОЛЕЕ СТАРЫЕ посты (existingTime < currentPostTime)
                     if (existingTime < currentPostTime) {
                         realInterval = Math.round((currentPostTime - existingTime) / 1000);
                         console.log(`Found older post: current=${currentPostTime}, existing=${existingTime}, interval=${realInterval}s`);
                         break;
-                    } else {
-                        console.log(`Skipping newer post: current=${currentPostTime}, existing=${existingTime}`);
                     }
                 }
             }
         }
     }
     
-    // Формируем строку с интервалом
+    // СОБИРАЕМ СТАТИСТИКУ Real Interval
+    if (realInterval && realInterval > 0) {
+        realIntervals.push(realInterval);
+        
+        // Ограничиваем массив последними 50 интервалами
+        if (realIntervals.length > 50) {
+            realIntervals = realIntervals.slice(-50);
+        }
+        
+        // Обновляем статистику
+        updateRealIntervalStats();
+    }
+    
     const timingInfo = realInterval !== null && realInterval > 0 ? 
         ` | Real interval: ${realInterval}s` : 
         ' | Latest post';
@@ -318,20 +334,20 @@ function addPostToUI(post) {
         </div>
     `;
     
-    // НОВЫЕ посты добавляем СВЕРХУ
     recentPosts.insertBefore(postElement, recentPosts.firstChild);
     
-    // Ограничиваем количество отображаемых постов
     while (recentPosts.children.length > 50) {
         recentPosts.removeChild(recentPosts.lastChild);
     }
     
-    // Обновляем счетчик постов
     const totalPostsElement = document.getElementById('total-posts');
     if (totalPostsElement) {
         const currentCount = parseInt(totalPostsElement.textContent) || 0;
         totalPostsElement.textContent = currentCount + 1;
     }
+    
+    // Обновляем количество активных аккаунтов
+    updateActiveAccountsCount();
     
     // Анимация для новых постов
     postElement.style.opacity = '0';
@@ -346,6 +362,34 @@ function addPostToUI(post) {
     console.log(`NEW post added: @${post.username}, realInterval: ${realInterval}s`);
 }
 
+// НОВЫЕ функции для Real Interval статистики
+function updateRealIntervalStats() {
+    if (realIntervals.length === 0) {
+        if (avgRealInterval) avgRealInterval.textContent = '-';
+        if (minRealInterval) minRealInterval.textContent = '-';
+        if (maxRealInterval) maxRealInterval.textContent = '-';
+        return;
+    }
+    
+    const avg = Math.round(realIntervals.reduce((a, b) => a + b, 0) / realIntervals.length);
+    const min = Math.min(...realIntervals);
+    const max = Math.max(...realIntervals);
+    
+    if (avgRealInterval) avgRealInterval.textContent = avg + 's';
+    if (minRealInterval) minRealInterval.textContent = min + 's';
+    if (maxRealInterval) maxRealInterval.textContent = max + 's';
+}
+
+function updateActiveAccountsCount() {
+    fetch('/api/accounts')
+        .then(response => response.json())
+        .then(accounts => {
+            const activeCount = accounts.filter(acc => acc.status === 'authorized').length;
+            if (activeAccountsCount) activeAccountsCount.textContent = activeCount;
+        })
+        .catch(error => console.error('Failed to update active accounts:', error));
+}
+
 function addLogToUI(log) {
     const logDiv = document.createElement('div');
     logDiv.className = `log-item ${log.level}`;
@@ -353,44 +397,31 @@ function addLogToUI(log) {
     
     logsContainer.insertBefore(logDiv, logsContainer.firstChild);
     
-    // Ограничиваем количество логов
     while (logsContainer.children.length > 100) {
         logsContainer.removeChild(logsContainer.lastChild);
     }
     
-    // Автоскролл
     logsContainer.scrollTop = 0;
 }
 
-function updatePerformanceMetrics(data) {
-    // Обновляем среднее время парсинга для каждого пользователя
-    const avgTime = document.getElementById(`avg-time-${data.username}`) || createUserMetric(data.username);
-    
-    // Вычисляем среднее время (простой способ)
-    const currentAvg = parseInt(avgTime.textContent) || 0;
-    const newAvg = currentAvg === 0 ? data.parseTime : Math.round((currentAvg + data.parseTime) / 2);
-    
-    avgTime.textContent = `${newAvg}ms`;
-    avgTime.className = newAvg < 1000 ? 'metric-good' : newAvg < 3000 ? 'metric-ok' : 'metric-slow';
-}
-
-function createUserMetric(username) {
-    const recentPosts = document.getElementById('recent-posts');
-    const metricDiv = document.createElement('div');
-    metricDiv.innerHTML = `
-        <div class="user-metric">
-            <span>@${username} avg time:</span>
-            <span id="avg-time-${username}" class="metric-value">0ms</span>
-        </div>
-    `;
-    recentPosts.appendChild(metricDiv);
-    return document.getElementById(`avg-time-${username}`);
-}
-
+// НАЙТИ функцию updateParseStats и ЗАМЕНИТЬ НА:
 function updateParseStats(stats) {
-    avgParseTime.textContent = stats.average > 0 ? stats.average + 'ms' : '0ms';
-    minParseTime.textContent = stats.min < Infinity ? stats.min + 'ms' : '0ms';
-    maxParseTime.textContent = stats.max + 'ms';
+    // Добавляем проверки на существование элементов
+    const avgParseTimeEl = document.getElementById('avg-parse-time');
+    const minParseTimeEl = document.getElementById('min-parse-time');
+    const maxParseTimeEl = document.getElementById('max-parse-time');
+    
+    if (avgParseTimeEl) {
+        avgParseTimeEl.textContent = stats.average > 0 ? stats.average + 'ms' : '0ms';
+    }
+    
+    if (minParseTimeEl) {
+        minParseTimeEl.textContent = stats.min < Infinity ? stats.min + 'ms' : '0ms';
+    }
+    
+    if (maxParseTimeEl) {
+        maxParseTimeEl.textContent = stats.max + 'ms';
+    }
 }
 
 // === УПРАВЛЕНИЕ АККАУНТАМИ ===
@@ -398,10 +429,12 @@ const addAccountBtn = document.getElementById('add-account-btn');
 const accountUsernameInput = document.getElementById('account-username-input');
 const accountsList = document.getElementById('accounts-list');
 
-addAccountBtn.addEventListener('click', addAccount);
-accountUsernameInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') addAccount();
-});
+if (addAccountBtn) addAccountBtn.addEventListener('click', addAccount);
+if (accountUsernameInput) {
+    accountUsernameInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') addAccount();
+    });
+}
 
 async function addAccount() {
     const username = accountUsernameInput.value.trim();
@@ -411,7 +444,6 @@ async function addAccount() {
         return;
     }
     
-    // Блокируем кнопку до завершения всего процесса авторизации
     addAccountBtn.disabled = true;
     addAccountBtn.textContent = 'Opening browser...';
     
@@ -427,23 +459,19 @@ async function addAccount() {
         if (result.success) {
             accountUsernameInput.value = '';
             addAccountBtn.textContent = 'Waiting for authorization...';
-            // НЕ разблокируем кнопку - ждем подтверждения
             loadAccounts();
         } else {
             alert('Failed to add account: ' + result.error);
-            // Разблокируем только при ошибке
             addAccountBtn.disabled = false;
             addAccountBtn.textContent = 'Add Account';
         }
     } catch (error) {
         alert('Error: ' + error.message);
-        // Разблокируем только при ошибке
         addAccountBtn.disabled = false;
         addAccountBtn.textContent = 'Add Account';
     }
 }
 
-// Подтверждение авторизации
 async function confirmAuthorization(username) {
     try {
         const response = await fetch('/api/accounts/confirm', {
@@ -456,7 +484,6 @@ async function confirmAuthorization(username) {
         
         if (result.success) {
             loadAccounts();
-            // Разблокируем кнопку после успешного подтверждения
             addAccountBtn.disabled = false;
             addAccountBtn.textContent = 'Add Account';
         } else {
@@ -467,7 +494,6 @@ async function confirmAuthorization(username) {
     }
 }
 
-// Удаление аккаунта
 async function deleteAccount(username) {
     if (!confirm(`Delete account ${username}?`)) return;
     
@@ -480,7 +506,6 @@ async function deleteAccount(username) {
         
         if (result.success) {
             loadAccounts();
-            // Разблокируем кнопку если удалили аккаунт в процессе авторизации
             addAccountBtn.disabled = false;
             addAccountBtn.textContent = 'Add Account';
         }
@@ -489,37 +514,47 @@ async function deleteAccount(username) {
     }
 }
 
-// Загрузка списка аккаунтов
 async function loadAccounts() {
     try {
         const response = await fetch('/api/accounts');
         const accounts = await response.json();
         
-        accountsList.innerHTML = '';
+        if (accountsList) {
+            accountsList.innerHTML = '';
+            
+            accounts.forEach(account => {
+                const accountDiv = document.createElement('div');
+                accountDiv.className = `account-item ${account.status}`;
+                
+                const statusIcon = account.status === 'authorized' ? '✅' : 
+                                 account.status === 'authorizing' ? '🔄' : '❌';
+                
+                // НАЙТИ блок создания accountDiv.innerHTML и ЗАМЕНИТЬ НА:
+                accountDiv.innerHTML = `
+                    <div class="account-info">
+                        <span class="account-status">${statusIcon}</span>
+                        <span class="account-username">${account.username}</span>
+                        <span class="account-ip">${account.ip || 'No IP'}</span>
+                        <span class="account-cookies">${account.cookiesCount || 0} cookies</span>
+                        <span class="account-session" id="session-${account.username}">🔍 Checking...</span>
+                    </div>
+                    <div class="account-actions">
+                        ${account.status === 'authorizing' ? 
+                            `<button onclick="confirmAuthorization('${account.username}')" class="btn btn-success btn-sm">I'm Authorized</button>` : ''}
+                        <button onclick="testSession('${account.username}')" class="btn btn-info btn-sm">Test Session</button>
+                        <button onclick="deleteAccount('${account.username}')" class="btn btn-danger btn-sm">Delete</button>
+                    </div>
+                `;
+
+                accountsList.appendChild(accountDiv);
+
+                // Проверяем наличие сохраненной сессии
+                checkSessionStatus(account.username);
+            });
+        }
         
-        accounts.forEach(account => {
-            const accountDiv = document.createElement('div');
-            accountDiv.className = `account-item ${account.status}`;
-            
-            const statusIcon = account.status === 'authorized' ? '✅' : 
-                             account.status === 'authorizing' ? '🔄' : '❌';
-            
-            accountDiv.innerHTML = `
-                <div class="account-info">
-                    <span class="account-status">${statusIcon}</span>
-                    <span class="account-username">${account.username}</span>
-                    <span class="account-ip">${account.ip || 'No IP'}</span>
-                    <span class="account-cookies">${account.cookiesCount || 0} cookies</span>
-                </div>
-                <div class="account-actions">
-                    ${account.status === 'authorizing' ? 
-                        `<button onclick="confirmAuthorization('${account.username}')" class="btn btn-success btn-sm">I'm Authorized</button>` : ''}
-                    <button onclick="deleteAccount('${account.username}')" class="btn btn-danger btn-sm">Delete</button>
-                </div>
-            `;
-            
-            accountsList.appendChild(accountDiv);
-        });
+        // Обновляем счетчик активных аккаунтов
+        updateActiveAccountsCount();
         
     } catch (error) {
         console.error('Failed to load accounts:', error);
@@ -530,54 +565,45 @@ function clearLogs() {
     socket.emit('clear-logs');
 }
 
-// Добавить новую функцию
 function clearPosts() {
     if (confirm('Are you sure you want to clear all recent posts?')) {
-        // Очищаем UI
         recentPosts.innerHTML = '';
-        
-        // Отправляем команду на сервер для очистки сохраненных постов
         socket.emit('clear-posts');
-        
-        // Добавляем лог
         addLogToUI({ 
             level: 'info', 
             message: '🗑️ Recent posts cleared' 
         });
         
+        // Сбрасываем статистику Real Interval
+        realIntervals = [];
+        updateRealIntervalStats();
+        
         console.log('Posts cleared by user');
     }
 }
 
-// Добавить новую функцию для обновления статуса
 function updateAccountStatus() {
-    // Получаем количество профилей
     fetch('/api/profiles')
         .then(response => response.json())
         .then(profiles => {
             const profilesCount = profiles.length;
             
-            // Получаем количество авторизованных аккаунтов
             fetch('/api/accounts')
                 .then(response => response.json())
                 .then(accounts => {
                     const authorizedCount = accounts.filter(acc => acc.status === 'authorized').length;
-                    const requiredCount = profilesCount * 3; // 10 аккаунтов на профиль
+                    const requiredCount = profilesCount * 7;
                     const stillNeed = Math.max(0, requiredCount - authorizedCount);
                     
-                    // Обновляем значения
                     if (profilesCountStatus) profilesCountStatus.textContent = profilesCount;
                     if (authorizedCountStatus) authorizedCountStatus.textContent = authorizedCount;
                     if (requiredCountStatus) requiredCountStatus.textContent = requiredCount;
                     if (stillNeedStatus) {
                         stillNeedStatus.textContent = stillNeed;
-                        
-                        // Меняем цвет в зависимости от количества
                         stillNeedStatus.className = 'status-value ' + 
                             (stillNeed === 0 ? 'status-success' : 'status-warning');
                     }
                     
-                    // Обновляем статус готовности
                     if (readinessStatus) {
                         if (profilesCount === 0) {
                             readinessStatus.textContent = 'No Profiles';
@@ -593,100 +619,98 @@ function updateAccountStatus() {
                             readinessStatus.className = 'status-badge status-error';
                         }
                     }
-                    
-                    console.log(`Status: ${profilesCount} profiles, ${authorizedCount}/${requiredCount} accounts, need ${stillNeed} more`);
                 })
                 .catch(error => console.error('Failed to load accounts:', error));
         })
         .catch(error => console.error('Failed to load profiles:', error));
 }
 
-// Модифицировать существующие функции для обновления статуса
-const originalLoadProfiles = loadProfiles;
-loadProfiles = function() {
-    originalLoadProfiles();
-    updateAccountStatus();
-};
 
-const originalLoadAccounts = loadAccounts;
-loadAccounts = function() {
-    originalLoadAccounts();
-    updateAccountStatus();
-};
+// Проверка статуса сессии
+async function checkSessionStatus(username) {
+    try {
+        const response = await fetch(`/api/sessions/check/${username}`);
+        const result = await response.json();
+        
+        const sessionElement = document.getElementById(`session-${username}`);
+        if (sessionElement) {
+            if (result.hasSession) {
+                sessionElement.innerHTML = `💾 Session saved (${result.savedAt})`;
+                sessionElement.className = 'account-session session-available';
+            } else {
+                sessionElement.innerHTML = '❌ No session';
+                sessionElement.className = 'account-session session-missing';
+            }
+        }
+    } catch (error) {
+        const sessionElement = document.getElementById(`session-${username}`);
+        if (sessionElement) {
+            sessionElement.innerHTML = '❓ Unknown';
+            sessionElement.className = 'account-session session-unknown';
+        }
+    }
+}
 
-// Обновлять статус при добавлении/удалении профилей и аккаунтов
-const originalAddProfile = addProfile;
-addProfile = async function() {
-    await originalAddProfile();
-    setTimeout(updateAccountStatus, 500); // Небольшая задержка для обновления данных
-};
+// Тестирование сессии
+async function testSession(username) {
+    try {
+        const testBtn = event.target;
+        testBtn.disabled = true;
+        testBtn.textContent = 'Testing...';
+        
+        const response = await fetch(`/api/sessions/test/${username}`, { method: 'POST' });
+        const result = await response.json();
+        
+        if (result.success) {
+            if (result.isValid) {
+                alert(`✅ Session for ${username} is VALID! User is logged in.`);
+                addLogToUI({ level: 'success', message: `✅ Session test passed for ${username}` });
+            } else {
+                alert(`❌ Session for ${username} is INVALID! User not logged in.`);
+                addLogToUI({ level: 'warning', message: `❌ Session test failed for ${username}` });
+            }
+        } else {
+            alert(`❌ Test failed: ${result.error}`);
+            addLogToUI({ level: 'error', message: `❌ Session test error for ${username}: ${result.error}` });
+        }
+        
+        testBtn.disabled = false;
+        testBtn.textContent = 'Test Session';
+        
+    } catch (error) {
+        alert(`Error: ${error.message}`);
+        event.target.disabled = false;
+        event.target.textContent = 'Test Session';
+    }
+}
 
-const originalDeleteProfile = deleteProfile;
-deleteProfile = async function(index) {
-    await originalDeleteProfile(index);
-    setTimeout(updateAccountStatus, 500);
-};
+// Добавить в глобальные функции
+window.testSession = testSession;
 
-// Слушаем изменения статуса аккаунтов
-socket.on('account-status', () => {
-    setTimeout(updateAccountStatus, 200);
-});
 
-// Обновляем статус при загрузке страницы
-window.addEventListener('load', () => {
-    setTimeout(updateAccountStatus, 1000);
-});
-
-// Периодическое обновление статуса
-setInterval(updateAccountStatus, 10000); // Каждые 10 секунд
-
-// Слушаем обновления статуса аккаунтов
-socket.on('account-status', (data) => {
-    loadAccounts(); // Перезагружаем список при изменении статуса
-});
-
-// Загружаем аккаунты при старте
-window.addEventListener('load', () => {
-    loadAccounts();
-});
-
-// Добавить в WebSocket events секцию в public/script.js
+// Остальные WebSocket events
 socket.on('saved-posts', (posts) => {
     console.log(`Received ${posts.length} saved posts from server`);
-    
-    // Очищаем контейнер перед загрузкой
     recentPosts.innerHTML = '';
-    
-    // Добавляем посты в правильном порядке (уже отсортированы на сервере)
     posts.forEach((post, index) => {
         console.log(`Loading saved post ${index + 1}/${posts.length}: @${post.username} at ${post.timestamp}`);
         addSavedPostToUI(post);
     });
-    
-    console.log(`Loaded ${posts.length} saved posts in correct order`);
 });
 
-// Новая функция для добавления сохраненных постов (без анимации)
 function addSavedPostToUI(post) {
-    if (!recentPosts) {
-        console.error('recentPosts element not found');
-        return;
-    }
+    if (!recentPosts) return;
     
     const postElement = document.createElement('div');
-    postElement.className = 'recent-post saved-post'; // Добавляем класс для saved постов
+    postElement.className = 'recent-post saved-post';
     
-    // Форматируем время
     const time = new Date(post.timestamp).toLocaleTimeString();
     const currentPostTime = new Date(post.timestamp).getTime();
-    
-    // Для сохраненных постов не вычисляем интервал (слишком сложно при загрузке)
-    const timingInfo = ' | Saved post';
     
     postElement.innerHTML = `
         <div class="post-header">
             <span class="post-username">@${post.username}</span>
-            <span class="post-time" data-timestamp="${currentPostTime}">${time} (${post.parseTime || 0}ms)${timingInfo}</span>
+            <span class="post-time" data-timestamp="${currentPostTime}">${time} (${post.parseTime || 0}ms) | Saved post</span>
             <span class="post-account">by ${post.parsedBy || 'unknown'}</span>
             ${post.tabId ? `<span class="post-tab">Tab #${post.tabId}</span>` : ''}
         </div>
@@ -699,51 +723,55 @@ function addSavedPostToUI(post) {
         </div>
     `;
     
-    // Добавляем В КОНЕЦ для сохранения порядка (посты уже отсортированы)
     recentPosts.appendChild(postElement);
 }
 
-
-// Принудительно обновляем статус при подключении
-socket.on('connect', () => {
-    addLogToUI({ level: 'info', message: 'Connected to server' });
-});
-
-socket.on('performance', (data) => {
-    updatePerformanceMetrics(data);
-});
-
-// Добавить в public/script.js после других socket.on
 socket.on('logs-cleared', () => {
     logsContainer.innerHTML = '';
-    recentPosts.innerHTML = ''; // Также очищаем посты
+    recentPosts.innerHTML = '';
     
-    // Сбрасываем счетчики
     if (totalPosts) totalPosts.textContent = '0';
     if (totalErrors) totalErrors.textContent = '0';
     
-    console.log('Logs and posts cleared');
+    realIntervals = [];
+    updateRealIntervalStats();
 });
 
-// Добавить в public/script.js после других socket.on
 socket.on('posts-cleared', () => {
     recentPosts.innerHTML = '';
+    realIntervals = [];
+    updateRealIntervalStats();
     
     addLogToUI({ 
         level: 'info', 
         message: '🗑️ Recent posts cleared on all clients' 
     });
-    
-    console.log('Posts cleared by server');
 });
 
-// Инициализация
+socket.on('account-status', () => {
+    setTimeout(updateAccountStatus, 200);
+    setTimeout(loadAccounts, 200);
+});
+
+socket.on('connect', () => {
+    addLogToUI({ level: 'info', message: 'Connected to server' });
+});
+
+// Инициализация при загрузке страницы
 window.addEventListener('load', () => {
     loadProfiles();
+    loadAccounts();
+    updateActiveAccountsCount();
+    updateRealIntervalStats();
+    updateAccountStatus();
     addLogToUI({ level: 'info', message: 'Web interface loaded' });
 });
 
-// Делаем функции глобальными для HTML onclick
+// Периодическое обновление
+setInterval(updateAccountStatus, 10000);
+setInterval(updateActiveAccountsCount, 5000);
+
+// Глобальные функции для HTML
 window.deleteProfile = deleteProfile;
-
-
+window.confirmAuthorization = confirmAuthorization;
+window.deleteAccount = deleteAccount;

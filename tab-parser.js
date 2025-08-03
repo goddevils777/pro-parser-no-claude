@@ -2,10 +2,11 @@
 const logger = require('./logger');
 
 class TabParser {
-    constructor(proxyManager, timingTracker) {
+    constructor(proxyManager, timingTracker, accountManager) {
         this.proxyManager = proxyManager;
         this.timingTracker = timingTracker;
-        this.activeTabs = new Map(); // username -> количество активных вкладок
+        this.accountManager = accountManager;
+        this.activeTabs = new Map();
     }
 
     // Инициализация счетчиков для аккаунтов
@@ -32,13 +33,28 @@ class TabParser {
 
     // Управление параллельным парсингом
     startParallelParsing(targetUsername, accounts) {
+        // ДОБАВИТЬ ПРОВЕРКУ КОЛИЧЕСТВА АККАУНТОВ
+        if (accounts.length < 7) {
+            const errorMessage = `❌ INSUFFICIENT ACCOUNTS for @${targetUsername}: Need exactly 7 accounts, but only ${accounts.length} provided`;
+            logger.error(errorMessage);
+            
+            if (global.io) {
+                global.io.emit('log', {
+                    level: 'error',
+                    message: errorMessage
+                });
+            }
+            
+            throw new Error(errorMessage);
+        }
+        
         logger.info(`🚀 Starting controlled continuous parsing for @${targetUsername} with ${accounts.length} accounts (max 2 tabs per browser)`);
+        
+        // Инициализируем счетчики вкладок
+        this.initializeTabCounters(accounts);
         
         let currentAccountIndex = 0;
         let tabCounter = 0;
-        
-        // Инициализируем счетчики вкладок для каждого аккаунта (МАКСИМУМ 2)
-        this.initializeTabCounters(accounts);
         
         // Запускаем новую вкладку каждые 5 секунд
         const continuousInterval = setInterval(() => {
@@ -121,6 +137,18 @@ class TabParser {
             // Создаем новую вкладку
             page = await account.context.newPage();
             
+            // Сразу минимизируем окно браузера чтобы он не мешал
+            if (account.browser && account.browser.contexts) {
+                try {
+                    // Отправляем браузер в фон
+                    await page.evaluate(() => {
+                        if (window.blur) window.blur();
+                    });
+                } catch (e) {
+                    // Игнорируем ошибки
+                }
+            }
+            
             // Настройка маршрутов для скорости
             await page.route('**/*', (route) => {
                 const resourceType = route.request().resourceType();
@@ -177,23 +205,24 @@ class TabParser {
                     });
                     
                     if (blockCheck.isBlocked) {
-                        logger.warn(`🚫 [Tab #${tabId}] [${account.username}] Page blocked: ${blockCheck.title}`);
+                        logger.warn(`🚫 [Tab #${tabId}] [${account.username}] Cloudflare blocked - switching IP`);
                         
-// Отправляем лог для сохранения
-                        if (global.sendLogUpdate) {
-                            global.sendLogUpdate({
-                                level: 'error',
-                                message: `🚫 [Tab #${tabId}] [${account.username}] Page blocked for @${targetUsername}`
-                            });
-                        }
-                        
-                        // Добавляем IP в блэклист
+                        // Добавляем старый IP в блэклист
                         if (account.proxy && account.proxy.server) {
                             const proxyUrl = `http://${account.proxy.username}:${account.proxy.password}@${account.proxy.server}`;
-                            await this.proxyManager.addBlacklistedProxy(proxyUrl, 'blocked during parsing');
+                            await this.proxyManager.addBlacklistedProxy(proxyUrl, 'cloudflare blocked');
                         }
                         
-                        break; // Выходим из цикла ожидания
+                        // Меняем IP для этого аккаунта
+                        const switched = await this.accountManager.switchProxyForAccount(account.username);
+                        
+                        if (switched) {
+                            logger.info(`✅ [Tab #${tabId}] [${account.username}] IP switched - retrying`);
+                            break; // Закрываем текущую вкладку, система создаст новую с новым IP
+                        } else {
+                            logger.error(`❌ [Tab #${tabId}] [${account.username}] Failed to switch IP`);
+                            break;
+                        }
                     }
                     
                     // Ищем посты
@@ -235,7 +264,8 @@ class TabParser {
                         const totalTime = Date.now() - startTime;
                         
                         // УСПЕХ! Получили пост
-                        const timingStats = this.timingTracker.trackPostTiming(targetUsername, post.content);
+                        const timingStats = this.timingTracker.trackPostTiming ? 
+                            this.timingTracker.trackPostTiming(targetUsername, post.content) : null;
                         
                         logger.info(`🎯 [Tab #${tabId}] [${account.username}] POST FOUND @${targetUsername} (${totalTime}ms, attempt ${attempts + 1}): ${post.content.substring(0, 80)}...`);
                         
@@ -248,6 +278,11 @@ class TabParser {
                         }
                         
                         if (global.io) {
+                            // ВЫЧИСЛЯЕМ РЕАЛЬНЫЙ ИНТЕРВАЛ С ПРЕДЫДУЩИМ ПОСТОМ
+                            const realTiming = this.timingTracker.trackPostTime ? 
+                                this.timingTracker.trackPostTime(targetUsername) : null;
+                            const realInterval = realTiming ? Math.round(realTiming.realSeconds) : null;
+                            
                             global.io.emit('new-post', {
                                 username: targetUsername,
                                 content: post.content,
@@ -259,12 +294,13 @@ class TabParser {
                                 tabId: tabId,
                                 attempts: attempts + 1,
                                 timingStats: timingStats,
-                                foundWith: post.foundWith
+                                foundWith: post.foundWith,
+                                realInterval: realInterval
                             });
                             
                             global.io.emit('log', {
                                 level: 'success',
-                                message: `🎯 [Tab #${tabId}] POST @${targetUsername} by ${account.username} (${totalTime}ms): ${post.content.substring(0, 50)}...`
+                                message: `🎯 [Tab #${tabId}] POST @${targetUsername} by ${account.username} (${totalTime}ms)${realInterval ? ` | Real interval: ${realInterval}s` : ''}: ${post.content.substring(0, 50)}...`
                             });
                             
                             if (timingStats) {
