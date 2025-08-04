@@ -650,7 +650,7 @@ async switchProxyForAccount(username) {
     // Получение авторизованных аккаунтов для парсинга
     getAuthorizedAccounts() {
         return Array.from(this.authorizedAccounts.values())
-            .filter(account => account.status === 'authorized' && account.browser);
+            .filter(account => account.browser && account.context);
     }
 
     // Вспомогательная функция для получения следующего прокси
@@ -658,6 +658,10 @@ async switchProxyForAccount(username) {
         const proxyUrl = this.proxyManager.getNextProxy();
         return proxyUrl ? this.proxyManager.parseProxy(proxyUrl) : null;
     }
+
+    
 }
+
+
 
 module.exports = AccountManager;

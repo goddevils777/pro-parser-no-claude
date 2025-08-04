@@ -32,6 +32,8 @@ const avgRealInterval = document.getElementById('avg-real-interval');
 const minRealInterval = document.getElementById('min-real-interval');
 const maxRealInterval = document.getElementById('max-real-interval');
 
+const testProxyBtn = document.getElementById('test-proxy-btn');
+
 // Переменные для отслеживания статистики
 let realIntervals = [];
 
@@ -102,7 +104,7 @@ async function startParser() {
                 
                 addLogToUI({ 
                     level: 'info', 
-                    message: '🔄 Will be changed back to 10 accounts after testing is complete' 
+                    message: '🔄 Will be changed back to 7 accounts after testing is complete' 
                 });
             }
             
@@ -591,7 +593,7 @@ function updateAccountStatus() {
             fetch('/api/accounts')
                 .then(response => response.json())
                 .then(accounts => {
-                    const authorizedCount = accounts.filter(acc => acc.status === 'authorized').length;
+                    const authorizedCount = accounts.filter(acc => acc.status === 'authorized' || acc.status === 'offline').length;
                     const requiredCount = profilesCount * 7;
                     const stillNeed = Math.max(0, requiredCount - authorizedCount);
                     
@@ -681,6 +683,62 @@ async function testSession(username) {
         alert(`Error: ${error.message}`);
         event.target.disabled = false;
         event.target.textContent = 'Test Session';
+    }
+}
+
+
+// Добавить после других элементов DOM
+
+if (testProxyBtn) testProxyBtn.addEventListener('click', testProxy);
+
+// Функция тестирования прокси
+async function testProxy() {
+    try {
+        testProxyBtn.disabled = true;
+        testProxyBtn.textContent = 'Testing...';
+        
+        const response = await fetch('/api/proxy/test', { method: 'POST' });
+        const result = await response.json();
+        
+        if (result.success) {
+            testProxyBtn.textContent = `✅ Working (${result.loadTime}ms)`;
+            testProxyBtn.className = 'btn btn-success';
+            
+            addLogToUI({ 
+                level: 'success', 
+                message: `✅ Proxy test successful: ${result.proxy} loaded Google in ${result.loadTime}ms` 
+            });
+        } else {
+            testProxyBtn.textContent = '❌ Failed';
+            testProxyBtn.className = 'btn btn-danger';
+            
+            addLogToUI({ 
+                level: 'error', 
+                message: `❌ Proxy test failed: ${result.error}` 
+            });
+        }
+        
+        // Возвращаем кнопку в исходное состояние через 3 секунды
+        setTimeout(() => {
+            testProxyBtn.disabled = false;
+            testProxyBtn.textContent = 'Test Proxy';
+            testProxyBtn.className = 'btn btn-info';
+        }, 3000);
+        
+    } catch (error) {
+        testProxyBtn.textContent = '❌ Error';
+        testProxyBtn.className = 'btn btn-danger';
+        
+        addLogToUI({ 
+            level: 'error', 
+            message: `❌ Proxy test error: ${error.message}` 
+        });
+        
+        setTimeout(() => {
+            testProxyBtn.disabled = false;
+            testProxyBtn.textContent = 'Test Proxy';
+            testProxyBtn.className = 'btn btn-info';
+        }, 3000);
     }
 }
 

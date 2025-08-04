@@ -136,7 +136,8 @@ class StealthParser {
         }
 
         // Теперь получаем авторизованные аккаунты
-        const authorizedAccounts = this.accountManager.getAuthorizedAccounts();
+       const allAccounts = this.accountManager.getAccountsList();
+const authorizedAccounts = allAccounts.filter(acc => acc.status === 'authorized' || acc.status === 'offline');
 
         if (global.io) {
             global.io.emit('log', {
@@ -148,7 +149,7 @@ class StealthParser {
         const requiredAccounts = profiles.length * 7; // 7 аккаунтов на профиль
 
         if (authorizedAccounts.length === 0) {
-            const message = 'No authorized accounts available. Please authorize at least one account first.';
+            const message = 'No accounts available (authorized or offline). Please add accounts first.';
             
             if (global.io) {
                 global.io.emit('log', {
@@ -207,7 +208,16 @@ class StealthParser {
                 accountIndex += 7;
 
                 if (profileAccounts.length < 7) {
-                    logger.warn(`⚠️ Only ${profileAccounts.length} accounts available for @${profile.username}`);
+                    const errorMessage = `❌ INSUFFICIENT ACCOUNTS for @${profile.username}: Need exactly 7 accounts, but only ${profileAccounts.length} provided. Skipping this profile.`;
+                    logger.error(errorMessage);
+                    
+                    if (global.io) {
+                        global.io.emit('log', {
+                            level: 'error',
+                            message: errorMessage
+                        });
+                    }
+                    continue; // Пропускаем этот профиль
                 }
 
                 // Запускаем парсинг для этого профиля

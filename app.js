@@ -114,6 +114,16 @@ app.post('/api/parser/start', async (req, res) => {
             return res.json({ success: false, error: 'No profiles to monitor' });
         }
         
+        // ПРОВЕРЯЕМ ОБЩЕЕ КОЛИЧЕСТВО АККАУНТОВ (любого статуса)
+        const allAccounts = global.parserInstance.getAccountsList();
+        const requiredAccounts = profiles.length * 7; // 7 аккаунтов на профиль
+        
+        if (allAccounts.length < requiredAccounts) {
+            const errorMessage = `❌ INSUFFICIENT ACCOUNTS: Need ${requiredAccounts} accounts for ${profiles.length} profiles. Currently have: ${allAccounts.length} total accounts. Add ${requiredAccounts - allAccounts.length} more accounts before starting monitoring.`;
+            
+            return res.json({ success: false, error: errorMessage });
+        }
+        
         // Запускаем мониторинг
         await global.parserInstance.startMonitoring(profiles);
         
@@ -145,6 +155,93 @@ app.post('/api/parser/stop', async (req, res) => {
         
     } catch (error) {
         console.error('Stop error:', error);
+        res.json({ success: false, error: error.message });
+    }
+});
+
+
+// Тестирование прокси
+app.post('/api/proxy/test', async (req, res) => {
+    let browser = null;
+    
+    try {
+        if (!global.parserInstance) {
+            const StealthParser = require('./stealth-parser');
+            global.parserInstance = new StealthParser();
+            await global.parserInstance.init();
+            global.io = io;
+        }
+        
+        // Получаем случайный прокси
+        const proxyUrl = global.parserInstance.proxyManager.getNextProxy();
+        if (!proxyUrl) {
+            return res.json({ success: false, error: 'No proxies available' });
+        }
+        
+        const proxy = global.parserInstance.proxyManager.parseProxy(proxyUrl);
+        const proxyServer = proxy ? proxy.server : 'direct';
+        
+        console.log(`🧪 Testing proxy: ${proxyServer}`);
+        
+        // Запускаем браузер для теста
+        const { chromium } = require('playwright');
+        const startTime = Date.now();
+        
+        browser = await chromium.launch({
+            headless: false,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        });
+
+        const context = await browser.newContext({
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            viewport: { width: 1280, height: 720 },
+            proxy: proxy
+        });
+        
+        const page = await context.newPage();
+        
+        // Тестируем загрузку Google
+        await page.goto('https://www.google.com/', { 
+            waitUntil: 'domcontentloaded',
+            timeout: 10000 
+        });
+        
+        const loadTime = Date.now() - startTime;
+        
+        // Проверяем что страница загрузилась успешно
+        const title = await page.title();
+        const isLoaded = title.includes('Google');
+        
+        // ЗАКРЫВАЕМ БРАУЗЕР СРАЗУ
+        await browser.close();
+        browser = null;
+        
+        if (isLoaded) {
+            // Добавляем прокси в whitelist
+            await global.parserInstance.proxyManager.addWhitelistedProxy(proxyUrl);
+            console.log(`✅ Proxy test successful: ${proxyServer} in ${loadTime}ms`);
+        }
+        
+        res.json({
+            success: isLoaded,
+            proxy: proxyServer,
+            loadTime: loadTime,
+            title: title,
+            error: isLoaded ? null : 'Page did not load correctly'
+        });
+        
+    } catch (error) {
+        console.error('❌ Proxy test error:', error);
+        
+        // Закрываем браузер в случае ошибки
+        if (browser) {
+            try {
+                await browser.close();
+            } catch (e) {
+                // Игнорируем ошибки закрытия
+            }
+        }
+        
         res.json({ success: false, error: error.message });
     }
 });
