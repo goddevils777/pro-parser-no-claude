@@ -271,6 +271,33 @@ h1 {
     outline: none;
     border-color: #9b59b6;
 }
+
+
+/* Browser Controls */
+.auth-browser-controls {
+    display: flex;
+    gap: 10px;
+    margin: 15px 0;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.auth-browser-controls .btn {
+    min-width: 120px;
+}
+
+.auth-form input[readonly] {
+    background-color: #f8f9fa;
+    color: #6c757d;
+}
+
+.info-item {
+    margin-bottom: 8px;
+}
+
+.info-item:last-child {
+    margin-bottom: 0;
+}
 .add-profile {
     display: flex;
     gap: 10px;

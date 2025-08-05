@@ -46,6 +46,7 @@ class ProxyManager {
             const proxyFile = './port_list.txt';
             if (await fs.pathExists(proxyFile)) {
                 const content = await fs.readFile(proxyFile, 'utf8');
+                
                 this.allProxies = content.split('\n')
                     .filter(line => line.trim())
                     .map(line => line.trim());

@@ -7,7 +7,8 @@ const path = require('path');
 const winston = require('winston');
 const axios = require('axios');
 
-const TruthSocialAPI = require('./truth-social-api');
+const truthSocialAPI = new TruthSocialAPI();
+const browserManager = new BrowserManager(truthSocialAPI);
 
 const app = express();
 const server = http.createServer(app);
@@ -39,6 +40,7 @@ let monitoringIntervals = new Map(); // username -> intervalId
 
 // Инициализация Truth Social API
 const truthSocialAPI = new TruthSocialAPI();
+const browserManager = new BrowserManager();
 
 // Logger setup
 const logger = winston.createLogger({
@@ -358,6 +360,12 @@ app.post('/api/monitoring/start', async (req, res) => {
         }
         monitoringIntervals.clear();
         
+        // Закрываем браузер если открыт
+        if (browserManager && browserManager.isRunning) {
+            logger.info('🔒 Closing browser...');
+            await browserManager.closeBrowser();
+        }
+        
         // Запускаем РЕАЛЬНЫЙ мониторинг профилей
         const intervalId = setInterval(async () => {
             await monitorAllProfiles(profiles);
@@ -628,6 +636,102 @@ function updateStats(newStats) {
     io.emit('stats', parserStats);
 }
 
+// API для запуска браузера авторизации
+// API для запуска браузера авторизации
+app.post('/api/auth/start-browser', async (req, res) => {
+    try {
+        logger.info('🌐 Starting browser authorization...');
+        
+        // Запускаем браузер с автоматической сменой IP (3 попытки)
+        const result = await browserManager.startBrowser(3);
+        
+        if (result.success) {
+            addLogToUI({
+                level: 'info',
+                message: '🌐 Browser opened for manual authorization'
+            });
+        } else {
+            addLogToUI({
+                level: 'error',
+                message: `❌ Browser start failed: ${result.error}`
+            });
+        }
+        
+        res.json(result);
+        
+    } catch (error) {
+        logger.error('Browser start error:', error);
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// API для закрытия браузера
+app.post('/api/auth/close-browser', async (req, res) => {
+    try {
+        await browserManager.closeBrowser();
+        
+        addLogToUI({
+            level: 'info',
+            message: '🔒 Browser closed'
+        });
+        
+        res.json({ success: true, message: 'Browser closed' });
+        
+    } catch (error) {
+        logger.error('Browser close error:', error);
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// API для получения статуса браузера
+app.get('/api/auth/browser-status', (req, res) => {
+    const status = browserManager.getStatus();
+    res.json(status);
+});
+
+// API для извлечения токена из браузера
+app.post('/api/auth/extract-token', async (req, res) => {
+    try {
+        const result = await browserManager.extractToken();
+        
+        if (result.success) {
+            // Автоматически устанавливаем токен в Truth Social API
+            truthSocialAPI.authToken = result.token;
+            truthSocialAPI.isAuthorized = true;
+            
+            addLogToUI({
+                level: 'success',
+                message: `🎫 Token extracted and set successfully: ${result.token.substring(0, 20)}...`
+            });
+            
+            // Автоматически закрываем браузер
+            await browserManager.closeBrowser();
+            
+            addLogToUI({
+                level: 'info',
+                message: '🔒 Browser closed automatically'
+            });
+            
+        } else {
+            addLogToUI({
+                level: 'warning',
+                message: `⚠️ Token extraction failed: ${result.error}`
+            });
+        }
+        
+        res.json(result);
+        
+    } catch (error) {
+        logger.error('Token extraction error:', error);
+        addLogToUI({
+            level: 'error',
+            message: `❌ Token extraction error: ${error.message}`
+        });
+        res.json({ success: false, error: error.message });
+    }
+});
+
+
 // === ЗАПУСК СЕРВЕРА ===
 
 const PORT = process.env.PORT || 3000;
@@ -665,6 +769,8 @@ process.on('SIGINT', () => {
         clearInterval(intervalId);
     }
     monitoringIntervals.clear();
+
+    
     
     server.close(() => {
         logger.info('✅ Server closed');

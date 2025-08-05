@@ -41,17 +41,34 @@
                 <span class="auth-label">Status:</span>
                 <span id="auth-status-text" class="status stopped">Not Authorized</span>
             </div>
+            
+            <div class="auth-browser-controls">
+                <button id="open-browser-btn" class="btn btn-info">Open Browser</button>
+                <button id="close-browser-btn" class="btn btn-danger" disabled>Close Browser</button>
+                <button id="confirm-auth-btn" class="btn btn-success" disabled>I'm Authorized</button>
+            </div>
+            
             <div class="auth-info">
                 <div class="info-item">
-                    <span class="info-icon">💡</span>
-                    <span class="info-text"><strong>Easy Setup:</strong> Get your Bearer token from Truth Social web app (F12 → Network → any API request → Authorization header)</span>
+                    <span class="info-icon">🌐</span>
+                    <span class="info-text"><strong>Step 1:</strong> Click "Open Browser" to open Truth Social login page</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-icon">🔐</span>
+                    <span class="info-text"><strong>Step 2:</strong> Login manually in the opened browser</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-icon">✅</span>
+                    <span class="info-text"><strong>Step 3:</strong> Click "I'm Authorized" to extract token and close browser</span>
                 </div>
             </div>
+            
             <div class="auth-form">
-                <input type="text" id="auth-token" placeholder="Bearer token (starts with 'ey...')">
+                <input type="text" id="auth-token" placeholder="Bearer token (starts with 'ey...')" readonly>
                 <button id="auth-token-btn" class="btn btn-primary">Set Token</button>
             </div>
         </div>
+
 
         <div class="controls">
             <button id="start-monitoring-btn" class="btn btn-success">Start API Monitoring</button>

@@ -9,6 +9,11 @@ const addProfileBtn = document.getElementById('add-profile-btn');
 const clearPostsBtn = document.getElementById('clear-posts-btn');
 const clearLogsBtn = document.getElementById('clear-logs-btn');
 
+// Элементы управления браузером
+const openBrowserBtn = document.getElementById('open-browser-btn');
+const closeBrowserBtn = document.getElementById('close-browser-btn');
+const confirmAuthBtn = document.getElementById('confirm-auth-btn');
+
 // Элементы авторизации
 const authTokenInput = document.getElementById('auth-token');
 const authTokenBtn = document.getElementById('auth-token-btn');
@@ -66,6 +71,18 @@ socket.on('posts-cleared', () => {
 });
 
 // === EVENT LISTENERS ===
+
+if (openBrowserBtn) {
+    openBrowserBtn.addEventListener('click', openBrowserForAuth);
+}
+
+if (closeBrowserBtn) {
+    closeBrowserBtn.addEventListener('click', closeBrowserAuth);
+}
+
+if (confirmAuthBtn) {
+    confirmAuthBtn.addEventListener('click', confirmAuthorization);
+}
 
 if (startMonitoringBtn) {
     startMonitoringBtn.addEventListener('click', startAPIMonitoring);
@@ -610,6 +627,210 @@ function clearLogs() {
 }
 
 // === ИНИЦИАЛИЗАЦИЯ ===
+
+// === ФУНКЦИИ УПРАВЛЕНИЯ БРАУЗЕРОМ ===
+
+// Открытие браузера для авторизации
+async function openBrowserForAuth() {
+    openBrowserBtn.disabled = true;
+    openBrowserBtn.textContent = 'Opening...';
+    
+    try {
+        addLogToUI({ 
+            level: 'info', 
+            message: '🌐 Opening browser for authorization...' 
+        });
+        
+        const response = await fetch('/api/auth/start-browser', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({})
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            openBrowserBtn.textContent = '✅ Browser Opened';
+            openBrowserBtn.className = 'btn btn-success';
+            closeBrowserBtn.disabled = false;
+            
+            // Если нужна верификация Cloudflare - активируем кнопку смены IP
+            if (result.needsVerification) {
+                tryNextIpBtn.disabled = false;
+                tryNextIpBtn.textContent = 'Try Next IP';
+                tryNextIpBtn.className = 'btn btn-warning';
+                
+                addLogToUI({ 
+                    level: 'warning', 
+                    message: '🛡️ Cloudflare verification required. Complete manually or try next IP.' 
+                });
+            } else {
+                // Если все ОК - активируем кнопку подтверждения
+                confirmAuthBtn.disabled = false;
+                addLogToUI({ 
+                    level: 'success', 
+                    message: '✅ Browser opened successfully. Please login manually.' 
+                });
+            }
+            
+        } else {
+            openBrowserBtn.textContent = '❌ Failed';
+            openBrowserBtn.className = 'btn btn-danger';
+            
+            addLogToUI({ 
+                level: 'error', 
+                message: `❌ Failed to open browser: ${result.error}` 
+            });
+            
+            // Возвращаем кнопку в исходное состояние через 3 секунды
+            setTimeout(() => {
+                openBrowserBtn.disabled = false;
+                openBrowserBtn.textContent = 'Open Browser';
+                openBrowserBtn.className = 'btn btn-info';
+            }, 3000);
+        }
+        
+    } catch (error) {
+        openBrowserBtn.textContent = '❌ Error';
+        openBrowserBtn.className = 'btn btn-danger';
+        
+        addLogToUI({ 
+            level: 'error', 
+            message: `❌ Browser error: ${error.message}` 
+        });
+        
+        setTimeout(() => {
+            openBrowserBtn.disabled = false;
+            openBrowserBtn.textContent = 'Open Browser';
+            openBrowserBtn.className = 'btn btn-info';
+        }, 3000);
+    }
+}
+
+// Закрытие браузера
+async function closeBrowserAuth() {
+    closeBrowserBtn.disabled = true;
+    closeBrowserBtn.textContent = 'Closing...';
+    
+    try {
+        const response = await fetch('/api/auth/close-browser', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            resetBrowserButtons();
+            addLogToUI({ 
+                level: 'info', 
+                message: '🔒 Browser closed' 
+            });
+        }
+        
+    } catch (error) {
+        addLogToUI({ 
+            level: 'error', 
+            message: `❌ Error closing browser: ${error.message}` 
+        });
+        
+        closeBrowserBtn.disabled = false;
+        closeBrowserBtn.textContent = 'Close Browser';
+    }
+}
+
+// Подтверждение авторизации
+// Подтверждение авторизации
+async function confirmAuthorization() {
+    confirmAuthBtn.disabled = true;
+    confirmAuthBtn.textContent = 'Extracting Token...';
+    
+    try {
+        addLogToUI({ 
+            level: 'info', 
+            message: '🔍 Extracting authorization token...' 
+        });
+        
+        const response = await fetch('/api/auth/extract-token', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            // Вставляем токен в поле
+            authTokenInput.value = result.token;
+            
+            // Обновляем статус авторизации
+            authStatusText.textContent = 'Authorized';
+            authStatusText.className = 'status running';
+            
+            // Сбрасываем кнопки браузера
+            resetBrowserButtons();
+            
+            addLogToUI({ 
+                level: 'success', 
+                message: '✅ Token extracted and set successfully!' 
+            });
+            
+            confirmAuthBtn.textContent = '✅ Token Set';
+            confirmAuthBtn.className = 'btn btn-success';
+            
+        } else {
+            confirmAuthBtn.textContent = '❌ Failed';
+            confirmAuthBtn.className = 'btn btn-danger';
+            
+            addLogToUI({ 
+                level: 'error', 
+                message: `❌ Token extraction failed: ${result.error}` 
+            });
+            
+            // Возвращаем кнопку в исходное состояние через 3 секунды
+            setTimeout(() => {
+                confirmAuthBtn.disabled = false;
+                confirmAuthBtn.textContent = 'I\'m Authorized';
+                confirmAuthBtn.className = 'btn btn-success';
+            }, 3000);
+        }
+        
+    } catch (error) {
+        confirmAuthBtn.textContent = '❌ Error';
+        confirmAuthBtn.className = 'btn btn-danger';
+        
+        addLogToUI({ 
+            level: 'error', 
+            message: `❌ Token extraction error: ${error.message}` 
+        });
+        
+        setTimeout(() => {
+            confirmAuthBtn.disabled = false;
+            confirmAuthBtn.textContent = 'I\'m Authorized';
+            confirmAuthBtn.className = 'btn btn-success';
+        }, 3000);
+    }
+}
+
+// Сброс состояния кнопок браузера
+function resetBrowserButtons() {
+    openBrowserBtn.disabled = false;
+    openBrowserBtn.textContent = 'Open Browser';
+    openBrowserBtn.className = 'btn btn-info';
+    
+    closeBrowserBtn.disabled = true;
+    closeBrowserBtn.textContent = 'Close Browser';
+    closeBrowserBtn.className = 'btn btn-danger';
+    
+    confirmAuthBtn.disabled = true;
+    confirmAuthBtn.textContent = 'I\'m Authorized';
+    confirmAuthBtn.className = 'btn btn-success';
+}
 
 // Загружаем данные при загрузке страницы
 document.addEventListener('DOMContentLoaded', () => {
