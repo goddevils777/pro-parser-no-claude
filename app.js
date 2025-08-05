@@ -1,462 +1,551 @@
+// app-api.js - Truth Social Parser API Version
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const fs = require('fs-extra');
 const path = require('path');
+const winston = require('winston');
+const axios = require('axios');
+
+const TruthSocialAPI = require('./truth-social-api');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
+const io = socketIo(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
+});
 
-app.set('view engine', 'ejs');
-app.use(express.static('public'));
+// Middleware
 app.use(express.json());
+app.use(express.static('public'));
+app.set('view engine', 'ejs');
 
+// Глобальные переменные
 let parserStats = {
-    isRunning: false,
-    totalPosts: 0,
-    errors: 0,
-    profiles: [],
-    lastPosts: []
+    running: false,
+    profilesCount: 0,
+    accountsCount: 0,
+    postsFound: 0,
+    lastActivity: null
 };
 
-// Загружаем логи и статистику из файлов
+let parseTimeStats = {};
 let webLogs = [];
-let parseTimeStats = { min: Infinity, max: 0, total: 0, count: 0, average: 0 };
-let recentPosts = []; 
-let firstRequestSkipped = new Map();
+let recentPosts = [];
+let monitoringIntervals = new Map(); // username -> intervalId
 
-// Загрузка данных при старте
-async function loadPersistedData() {
-    try {
-        webLogs = await fs.readJson('./data/web-logs.json').catch(() => []);
-        parseTimeStats = await fs.readJson('./data/parse-stats.json').catch(() => ({ 
-            min: Infinity, max: 0, total: 0, count: 0, average: 0 
-        }));
-        recentPosts = await fs.readJson('./data/recent-posts.json').catch(() => []);
-        
-        console.log(`Loaded ${webLogs.length} logs, ${recentPosts.length} posts`);
-        
-    } catch (error) {
-        console.log('No persisted data found, starting fresh');
-    }
-}
+// Инициализация Truth Social API
+const truthSocialAPI = new TruthSocialAPI();
 
-// Сохранение данных
-async function savePersistedData() {
-    try {
-        await fs.writeJson('./data/web-logs.json', webLogs);
-        await fs.writeJson('./data/parse-stats.json', parseTimeStats);
-        await fs.writeJson('./data/recent-posts.json', recentPosts);
-    } catch (error) {
-        console.error('Failed to save data:', error);
-    }
-}
+// Logger setup
+const logger = winston.createLogger({
+    level: 'info',
+    format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.printf(({ timestamp, level, message }) => {
+            return `${timestamp} [${level.toUpperCase()}] ${message}`;
+        })
+    ),
+    transports: [
+        new winston.transports.Console(),
+        new winston.transports.File({ filename: './logs/combined.log' })
+    ]
+});
 
-// Вызываем загрузку при старте
-loadPersistedData();
+// === API ENDPOINTS ===
 
 // Главная страница
 app.get('/', (req, res) => {
-    res.render('index', { stats: parserStats });
+    res.render('index', { 
+        title: 'Truth Social Parser - API Version',
+        version: 'API'
+    });
 });
 
-// API endpoints
+// API для получения профилей
 app.get('/api/profiles', async (req, res) => {
     try {
-        const profiles = await fs.readJson('./data/profiles.json');
-        res.json(profiles);
+        const profilesPath = './data/profiles.json';
+        if (await fs.pathExists(profilesPath)) {
+            const profiles = await fs.readJson(profilesPath);
+            res.json(profiles);
+        } else {
+            res.json([]);
+        }
     } catch (error) {
         res.json([]);
     }
 });
 
+// API для добавления профиля
 app.post('/api/profiles', async (req, res) => {
     try {
-        const profiles = await fs.readJson('./data/profiles.json');
-        profiles.push(req.body);
-        await fs.writeJson('./data/profiles.json', profiles);
+        const { username, keywords } = req.body;
+        
+        if (!username) {
+            return res.json({ success: false, error: 'Username required' });
+        }
+
+        const profilesPath = './data/profiles.json';
+        let profiles = [];
+        
+        if (await fs.pathExists(profilesPath)) {
+            profiles = await fs.readJson(profilesPath);
+        }
+
+        // Проверяем дубликаты
+        if (profiles.find(p => p.username === username)) {
+            return res.json({ success: false, error: 'Profile already exists' });
+        }
+
+        profiles.push({
+            username: username.replace('@', ''),
+            keywords: keywords || '',
+            addedAt: new Date().toISOString(),
+            status: 'active'
+        });
+
+        await fs.ensureDir('./data');
+        await fs.writeJson(profilesPath, profiles);
+        
+        logger.info(`📝 Profile added: @${username}`);
+        res.json({ success: true, message: 'Profile added successfully' });
+        
+    } catch (error) {
+        logger.error('Error adding profile:', error);
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// API для удаления профиля
+app.delete('/api/profiles/:username', async (req, res) => {
+    try {
+        const { username } = req.params;
+        const profilesPath = './data/profiles.json';
+        
+        if (await fs.pathExists(profilesPath)) {
+            let profiles = await fs.readJson(profilesPath);
+            profiles = profiles.filter(p => p.username !== username);
+            await fs.writeJson(profilesPath, profiles);
+        }
+        
+        logger.info(`🗑️ Profile removed: @${username}`);
         res.json({ success: true });
+        
     } catch (error) {
         res.json({ success: false, error: error.message });
     }
 });
 
-app.delete('/api/profiles/:index', async (req, res) => {
+// API для получения аккаунтов (заглушка)
+app.get('/api/accounts', (req, res) => {
+    logger.info('🔍 API /api/accounts called - returning empty array (API mode)');
+    res.json([]);
+});
+
+// API для получения постов
+app.get('/api/posts', async (req, res) => {
     try {
-        const profiles = await fs.readJson('./data/profiles.json');
-        profiles.splice(req.params.index, 1);
-        await fs.writeJson('./data/profiles.json', profiles);
-        res.json({ success: true });
+        const postsPath = './data/recent-posts.json';
+        if (await fs.pathExists(postsPath)) {
+            const posts = await fs.readJson(postsPath);
+            res.json(posts.slice(0, 50)); // Последние 50 постов
+        } else {
+            res.json([]);
+        }
     } catch (error) {
-        res.json({ success: false, error: error.message });
+        res.json([]);
     }
 });
 
-// Запуск парсера
-app.post('/api/parser/start', async (req, res) => {
+// API для получения логов
+app.get('/api/logs', (req, res) => {
+    res.json(webLogs.slice(-100)); // Последние 100 логов
+});
+
+// API для очистки логов
+app.post('/api/logs/clear', (req, res) => {
+    webLogs = [];
+    logger.info('🗑️ Logs cleared');
+    res.json({ success: true });
+});
+
+// API для очистки постов
+app.post('/api/posts/clear', (req, res) => {
+    recentPosts = [];
+    logger.info('🗑️ Posts cleared');
+    res.json({ success: true });
+});
+
+// API для статистики
+app.get('/api/stats', (req, res) => {
+    res.json({
+        ...parserStats,
+        version: 'API',
+        mode: 'API-only (browsers disabled)'
+    });
+});
+
+// API для установки Bearer токена
+app.post('/api/auth/token', async (req, res) => {
     try {
-        // Принудительно останавливаем старый парсер если есть
-        if (global.parserInstance) {
-            await global.parserInstance.stopMonitoring();
+        const { token } = req.body;
+        
+        if (!token) {
+            return res.json({ success: false, error: 'Token required' });
         }
         
-        if (!global.parserInstance) {
-            const StealthParser = require('./stealth-parser');
-            global.parserInstance = new StealthParser();
-            await global.parserInstance.init();
-            global.io = io;
+        if (!token.startsWith('ey')) {
+            return res.json({ success: false, error: 'Invalid token format (should start with "ey")' });
         }
         
-        const profiles = await fs.readJson('./data/profiles.json').catch(() => []);
+        logger.info(`🎫 Setting Bearer token: ${token.substring(0, 20)}...`);
+        
+        // Устанавливаем токен
+        truthSocialAPI.authToken = token;
+        truthSocialAPI.isAuthorized = true;
+        
+        // Тестируем токен
+        const testResult = await truthSocialAPI.testConnection();
+        
+        if (testResult.success) {
+            logger.info(`✅ Bearer token is valid and working`);
+            addLogToUI({
+                level: 'success',
+                message: `✅ Bearer token set successfully and tested`
+            });
+            
+            res.json({ 
+                success: true, 
+                message: 'Token set and verified successfully',
+                isAuthorized: true,
+                stats: testResult.stats
+            });
+        } else {
+            logger.warn(`⚠️ Bearer token set but test failed: ${testResult.message}`);
+            addLogToUI({
+                level: 'warning',
+                message: `⚠️ Token set but verification failed: ${testResult.message}`
+            });
+            
+            res.json({ 
+                success: true, 
+                message: 'Token set (verification failed but will try to use)',
+                isAuthorized: true,
+                warning: testResult.message
+            });
+        }
+        
+    } catch (error) {
+        logger.error('Token setup error:', error.message);
+        res.json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
+// API для проверки статуса авторизации
+app.get('/api/auth/status', (req, res) => {
+    res.json({
+        isAuthorized: truthSocialAPI.isAuthorized,
+        hasToken: !!truthSocialAPI.authToken,
+        stats: truthSocialAPI.getStats()
+    });
+});
+app.post('/api/test-truth-social', async (req, res) => {
+    try {
+        logger.info(`🧪 Testing simple HTTP connection...`);
+        
+        // Простейший тест без прокси и SSL
+        const startTime = Date.now();
+        
+        try {
+            // Тестируем простой HTTP сайт
+            const response = await axios.get('http://httpbin.org/ip', {
+                timeout: 5000,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            });
+            
+            const responseTime = Date.now() - startTime;
+            
+            if (response.status === 200) {
+                const ip = response.data.origin || 'unknown';
+                logger.info(`✅ Connection test successful: IP ${ip}, ${responseTime}ms`);
+                
+                res.json({ 
+                    success: true, 
+                    message: `Connection working! Your IP: ${ip}`,
+                    details: {
+                        responseTime: responseTime,
+                        ip: ip,
+                        status: 'working'
+                    }
+                });
+            } else {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            
+        } catch (httpError) {
+            logger.warn(`HTTP test failed: ${httpError.message}`);
+            
+            // Fallback - простая проверка DNS
+            const dns = require('dns');
+            const dnsStartTime = Date.now();
+            
+            dns.lookup('google.com', (err, address) => {
+                const dnsTime = Date.now() - dnsStartTime;
+                
+                if (!err) {
+                    logger.info(`✅ DNS test successful: ${address}, ${dnsTime}ms`);
+                    res.json({ 
+                        success: true, 
+                        message: `DNS working! Google resolves to ${address}`,
+                        details: {
+                            responseTime: dnsTime,
+                            ip: address,
+                            status: 'dns_only'
+                        }
+                    });
+                } else {
+                    logger.error(`❌ DNS test failed: ${err.message}`);
+                    res.json({ 
+                        success: false, 
+                        error: `No internet connection: ${err.message}`,
+                        details: {
+                            status: 'failed'
+                        }
+                    });
+                }
+            });
+        }
+        
+    } catch (error) {
+        logger.error('Connection test error:', error.message);
+        res.json({ 
+            success: false, 
+            error: `Connection test failed: ${error.message}`,
+            details: {
+                status: 'error'
+            }
+        });
+    }
+});
+
+// API для запуска мониторинга
+app.post('/api/monitoring/start', async (req, res) => {
+    try {
+        const profilesPath = './data/profiles.json';
+        
+        if (!(await fs.pathExists(profilesPath))) {
+            return res.json({ success: false, error: 'No profiles to monitor' });
+        }
+        
+        const profiles = await fs.readJson(profilesPath);
         
         if (profiles.length === 0) {
             return res.json({ success: false, error: 'No profiles to monitor' });
         }
         
-        // ПРОВЕРЯЕМ ОБЩЕЕ КОЛИЧЕСТВО АККАУНТОВ (любого статуса)
-        const allAccounts = global.parserInstance.getAccountsList();
-        const requiredAccounts = profiles.length * 7; // 7 аккаунтов на профиль
-        
-        if (allAccounts.length < requiredAccounts) {
-            const errorMessage = `❌ INSUFFICIENT ACCOUNTS: Need ${requiredAccounts} accounts for ${profiles.length} profiles. Currently have: ${allAccounts.length} total accounts. Add ${requiredAccounts - allAccounts.length} more accounts before starting monitoring.`;
-            
-            return res.json({ success: false, error: errorMessage });
+        // Останавливаем существующие интервалы
+        for (const [username, intervalId] of monitoringIntervals) {
+            clearInterval(intervalId);
         }
+        monitoringIntervals.clear();
         
-        // Запускаем мониторинг
-        await global.parserInstance.startMonitoring(profiles);
+        // Запускаем РЕАЛЬНЫЙ мониторинг профилей
+        const intervalId = setInterval(async () => {
+            await monitorAllProfiles(profiles);
+        }, 30000); // каждые 30 секунд
         
-        parserStats.isRunning = true;
-        parserStats.startTime = Date.now();
+        monitoringIntervals.set('main', intervalId);
         
-        res.json({ success: true });
+        // Первый запуск сразу
+        await monitorAllProfiles(profiles);
+        
+        parserStats.running = true;
+        parserStats.profilesCount = profiles.length;
+        parserStats.lastActivity = new Date().toISOString();
+        
+        logger.info(`🚀 Started REAL API monitoring for ${profiles.length} profiles`);
+        addLogToUI({
+            level: 'info',
+            message: `🚀 Started monitoring ${profiles.length} profiles: ${profiles.map(p => '@' + p.username).join(', ')}`
+        });
+        
+        updateStats({ running: true, profilesCount: profiles.length });
+        
+        res.json({ 
+            success: true, 
+            message: `Monitoring started for ${profiles.length} profiles`,
+            profiles: profiles.map(p => p.username)
+        });
         
     } catch (error) {
+        logger.error('Error starting monitoring:', error);
         res.json({ success: false, error: error.message });
     }
 });
 
-// Остановка парсера
-app.post('/api/parser/stop', async (req, res) => {
-    try {
-        if (global.parserInstance) {
-            await global.parserInstance.stopMonitoring();
-            parserStats.isRunning = false;
+// Функция мониторинга всех профилей
+async function monitorAllProfiles(profiles) {
+    addLogToUI({ 
+        level: 'info', 
+        message: `🔄 Checking ${profiles.length} profiles for latest posts...` 
+    });
+    
+    for (const profile of profiles) {
+        try {
+            const success = await monitorProfileWithRetry(profile);
             
-            // Отправляем обновленный статус клиентам
-            io.emit('stats', parserStats);
-            io.emit('log', {
-                level: 'info',
-                message: 'Parser stopped (authorized browsers remain open)'
+            if (!success) {
+                addLogToUI({
+                    level: 'warning',
+                    message: `⚠️ Failed to check @${profile.username} - trying next IP`
+                });
+            }
+            
+            // Задержка между профилями 
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+        } catch (error) {
+            addLogToUI({ 
+                level: 'error', 
+                message: `❌ Error checking @${profile.username}: ${error.message}` 
             });
         }
-        res.json({ success: true });
-        
-    } catch (error) {
-        console.error('Stop error:', error);
-        res.json({ success: false, error: error.message });
     }
-});
+}
 
-
-// Тестирование прокси
-app.post('/api/proxy/test', async (req, res) => {
-    let browser = null;
-    
-    try {
-        if (!global.parserInstance) {
-            const StealthParser = require('./stealth-parser');
-            global.parserInstance = new StealthParser();
-            await global.parserInstance.init();
-            global.io = io;
-        }
-        
-        // Получаем случайный прокси
-        const proxyUrl = global.parserInstance.proxyManager.getNextProxy();
-        if (!proxyUrl) {
-            return res.json({ success: false, error: 'No proxies available' });
-        }
-        
-        const proxy = global.parserInstance.proxyManager.parseProxy(proxyUrl);
-        const proxyServer = proxy ? proxy.server : 'direct';
-        
-        console.log(`🧪 Testing proxy: ${proxyServer}`);
-        
-        // Запускаем браузер для теста
-        const { chromium } = require('playwright');
-        const startTime = Date.now();
-        
-        browser = await chromium.launch({
-            headless: false,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
-
-        const context = await browser.newContext({
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            viewport: { width: 1280, height: 720 },
-            proxy: proxy
-        });
-        
-        const page = await context.newPage();
-        
-        // Тестируем загрузку Google
-        await page.goto('https://www.google.com/', { 
-            waitUntil: 'domcontentloaded',
-            timeout: 10000 
-        });
-        
-        const loadTime = Date.now() - startTime;
-        
-        // Проверяем что страница загрузилась успешно
-        const title = await page.title();
-        const isLoaded = title.includes('Google');
-        
-        // ЗАКРЫВАЕМ БРАУЗЕР СРАЗУ
-        await browser.close();
-        browser = null;
-        
-        if (isLoaded) {
-            // Добавляем прокси в whitelist
-            await global.parserInstance.proxyManager.addWhitelistedProxy(proxyUrl);
-            console.log(`✅ Proxy test successful: ${proxyServer} in ${loadTime}ms`);
-        }
-        
-        res.json({
-            success: isLoaded,
-            proxy: proxyServer,
-            loadTime: loadTime,
-            title: title,
-            error: isLoaded ? null : 'Page did not load correctly'
-        });
-        
-    } catch (error) {
-        console.error('❌ Proxy test error:', error);
-        
-        // Закрываем браузер в случае ошибки
-        if (browser) {
-            try {
-                await browser.close();
-            } catch (e) {
-                // Игнорируем ошибки закрытия
+// Мониторинг профиля с повторами и сменой IP
+async function monitorProfileWithRetry(profile, maxRetries = 3) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            addLogToUI({
+                level: 'info',
+                message: `🔍 Checking @${profile.username} (attempt ${attempt}/${maxRetries})...`
+            });
+            
+            const startTime = Date.now();
+            
+            // Получаем последний пост через Truth Social API
+            const result = await truthSocialAPI.getUserPosts(profile.username, 1);
+            const responseTime = Date.now() - startTime;
+            
+            if (result.success && result.posts.length > 0) {
+                const latestPost = result.posts[0];
+                
+                addLogToUI({
+                    level: 'success',
+                    message: `✅ @${profile.username} checked successfully (${responseTime}ms)`
+                });
+                
+                // Показываем последний пост
+                const postData = {
+                    id: latestPost.id,
+                    content: latestPost.content,
+                    createdAt: latestPost.createdAt,
+                    author: profile.username,
+                    profile: profile.username,
+                    keywords: profile.keywords,
+                    foundAt: new Date().toISOString(),
+                    method: result.method || 'api',
+                    url: latestPost.url
+                };
+                
+                addPostToUI(postData);
+                await savePost(postData);
+                
+                parserStats.postsFound++;
+                parserStats.lastActivity = new Date().toISOString();
+                updateStats({ postsFound: parserStats.postsFound });
+                
+                // Показываем информацию о посте
+                const postTime = new Date(latestPost.createdAt);
+                const now = new Date();
+                const diffMinutes = Math.round((now - postTime) / (1000 * 60));
+                
+                addLogToUI({
+                    level: 'info',
+                    message: `📄 Latest post from @${profile.username} (${diffMinutes} min ago): "${latestPost.content.substring(0, 100)}..."`
+                });
+                
+                return true; // Успех
+                
+            } else if (result.error && result.error.includes('cloudflare')) {
+                // Cloudflare заблокировал - пробуем следующий IP
+                addLogToUI({
+                    level: 'warning',
+                    message: `🛡️ Cloudflare blocked IP for @${profile.username} - trying next IP...`
+                });
+                
+                // Принудительно переключаем на следующий прокси
+                truthSocialAPI.currentProxyIndex = (truthSocialAPI.currentProxyIndex + 1) % (truthSocialAPI.proxies.length || 1);
+                
+                continue; // Пробуем снова с новым IP
+                
+            } else {
+                addLogToUI({
+                    level: 'warning',
+                    message: `⚠️ @${profile.username} no posts found: ${result.error || 'empty feed'} (${responseTime}ms)`
+                });
+                
+                return false;
+            }
+            
+        } catch (error) {
+            addLogToUI({
+                level: 'error',
+                message: `❌ Attempt ${attempt} failed for @${profile.username}: ${error.message}`
+            });
+            
+            if (attempt < maxRetries) {
+                addLogToUI({
+                    level: 'info',
+                    message: `🔄 Switching IP and retrying @${profile.username}...`
+                });
+                
+                // Переключаем на следующий прокси
+                truthSocialAPI.currentProxyIndex = (truthSocialAPI.currentProxyIndex + 1) % (truthSocialAPI.proxies.length || 1);
+                
+                // Ждем перед повтором
+                await new Promise(resolve => setTimeout(resolve, 2000));
             }
         }
-        
-        res.json({ success: false, error: error.message });
-    }
-});
-
-// === API ДЛЯ УПРАВЛЕНИЯ АККАУНТАМИ ===
-
-// Получение списка аккаунтов
-app.get('/api/accounts', (req, res) => {
-    console.log('🔍 API /api/accounts called');
-    console.log('🔍 global.parserInstance exists:', !!global.parserInstance);
-    
-    if (global.parserInstance) {
-        console.log('🔍 Calling getAccountsList...');
-        const accounts = global.parserInstance.getAccountsList();
-        console.log(`🔍 getAccountsList returned ${accounts.length} accounts:`, accounts);
-        res.json(accounts);
-    } else {
-        console.log('🔍 No global.parserInstance found, returning empty array');
-        res.json([]);
-    }
-});
-
-// Начало авторизации аккаунта
-app.post('/api/accounts/authorize', async (req, res) => {
-    const { username } = req.body;
-    
-    if (!username) {
-        return res.json({ success: false, error: 'Username required' });
     }
     
+    return false; // Все попытки неудачны
+}
+
+// Сохранение поста в файл
+async function savePost(postData) {
     try {
-        if (!global.parserInstance) {
-            const StealthParser = require('./stealth-parser');
-            global.parserInstance = new StealthParser();
-            await global.parserInstance.init();
-            global.io = io;
+        const postsPath = './data/recent-posts.json';
+        let posts = [];
+        
+        if (await fs.pathExists(postsPath)) {
+            posts = await fs.readJson(postsPath);
         }
         
-        const result = await global.parserInstance.startAccountAuthorization(username);
-        res.json(result);
+        posts.unshift(postData);
+        
+        // Ограничиваем количество сохраненных постов
+        if (posts.length > 1000) {
+            posts = posts.slice(0, 1000);
+        }
+        
+        await fs.ensureDir('./data');
+        await fs.writeJson(postsPath, posts);
         
     } catch (error) {
-        res.json({ success: false, error: error.message });
+        logger.error('Error saving post:', error);
     }
-});
-
-// Подтверждение авторизации аккаунта
-app.post('/api/accounts/confirm', async (req, res) => {
-    const { username } = req.body;
-    
-    if (!username) {
-        return res.json({ success: false, error: 'Username required' });
-    }
-    
-    try {
-        if (!global.parserInstance) {
-            return res.json({ success: false, error: 'Parser not initialized' });
-        }
-        
-        const result = await global.parserInstance.confirmAccountAuthorization(username);
-        res.json(result);
-        
-    } catch (error) {
-        res.json({ success: false, error: error.message });
-    }
-});
-
-// Удаление аккаунта
-app.delete('/api/accounts/:username', async (req, res) => {
-    const { username } = req.params;
-    
-    try {
-        if (global.parserInstance) {
-            await global.parserInstance.removeAccount(username);
-        }
-        res.json({ success: true });
-        
-    } catch (error) {
-        res.json({ success: false, error: error.message });
-    }
-});
-
-// Статистика времени постов
-app.get('/api/timing-stats', (req, res) => {
-    if (global.parserInstance) {
-        const timingStats = global.parserInstance.getPostTimingStats();
-        res.json(timingStats);
-    } else {
-        res.json({});
-    }
-});
-
-// Статистика вкладок
-app.get('/api/tabs-stats', (req, res) => {
-    if (global.parserInstance) {
-        const tabsStats = global.parserInstance.getTabsStats();
-        res.json(tabsStats);
-    } else {
-        res.json({});
-    }
-});
-
-// === API ДЛЯ УПРАВЛЕНИЯ СЕССИЯМИ ===
-
-// Проверка наличия сохраненной сессии
-app.get('/api/sessions/check/:username', async (req, res) => {
-    const { username } = req.params;
-    
-    try {
-        const sessionPath = `./data/sessions/${username}-session.json`;
-        const hasSession = await fs.pathExists(sessionPath);
-        
-        if (hasSession) {
-            const sessionData = await fs.readJson(sessionPath);
-            res.json({
-                hasSession: true,
-                savedAt: new Date(sessionData.savedAt).toLocaleDateString(),
-                cookiesCount: sessionData.cookies?.length || 0
-            });
-        } else {
-            res.json({ hasSession: false });
-        }
-    } catch (error) {
-        res.json({ hasSession: false, error: error.message });
-    }
-});
-
-// Тестирование сессии (открыть браузер на 10 секунд)
-app.post('/api/sessions/test/:username', async (req, res) => {
-    const { username } = req.params;
-    
-    try {
-        const sessionPath = `./data/sessions/${username}-session.json`;
-        
-        if (!await fs.pathExists(sessionPath)) {
-            return res.json({ success: false, error: 'No saved session found' });
-        }
-        
-        const sessionData = await fs.readJson(sessionPath);
-        
-        // Получаем рабочий IP через global.parserInstance
-        let proxy = null;
-        if (global.parserInstance && global.parserInstance.proxyManager) {
-            const proxyUrl = global.parserInstance.proxyManager.getNextProxy();
-            proxy = proxyUrl ? global.parserInstance.proxyManager.parseProxy(proxyUrl) : null;
-        }
-        
-        console.log(`🧪 Testing session for ${username} with IP: ${proxy?.server || 'direct'}`);
-        
-        // Запускаем браузер для теста
-        const { chromium } = require('playwright');
-        const browser = await chromium.launch({
-            headless: false,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
-
-        const context = await browser.newContext({
-            userAgent: sessionData.userAgent,
-            viewport: { width: 1280, height: 720 },
-            proxy: proxy
-        });
-        
-        // Восстанавливаем cookies
-        await context.addCookies(sessionData.cookies);
-        
-        const page = await context.newPage();
-        
-        // Восстанавливаем localStorage и sessionStorage
-        await page.addInitScript(`
-            localStorage.clear();
-            sessionStorage.clear();
-            Object.assign(localStorage, ${sessionData.localStorage});
-            Object.assign(sessionStorage, ${sessionData.sessionStorage});
-        `);
-        
-        // Переходим на сайт
-        await page.goto('https://truthsocial.com/', { 
-            waitUntil: 'domcontentloaded',
-            timeout: 15000 
-        });
-        
-        // Ждем 3 секунды загрузки
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        
-        // Проверяем авторизацию
-        const authCheck = await page.evaluate(() => {
-            const bodyText = document.body.textContent;
-            return {
-                isLoggedIn: !bodyText.includes('Sign in') && 
-                           !bodyText.includes('Log in') &&
-                           !bodyText.includes('Create account'),
-                title: document.title,
-                url: window.location.href
-            };
-        });
-        
-        console.log(`🔍 Session test result for ${username}: ${authCheck.isLoggedIn ? 'VALID' : 'INVALID'}`);
-        
-        // Показываем результат на 7 секунд
-        await new Promise(resolve => setTimeout(resolve, 7000));
-        
-        // Закрываем браузер
-        await browser.close();
-        
-        res.json({
-            success: true,
-            isValid: authCheck.isLoggedIn,
-            details: authCheck
-        });
-        
-    } catch (error) {
-        console.error(`❌ Session test error for ${username}:`, error);
-        res.json({ success: false, error: error.message });
-    }
-});
+}
 
 // === WEBSOCKET ОБРАБОТКА ===
 
@@ -464,7 +553,6 @@ io.on('connection', (socket) => {
     console.log('Client connected');
     
     socket.emit('stats', parserStats);
-    socket.emit('parse-stats', parseTimeStats);
     
     // Отправляем сохраненные логи при подключении
     console.log(`Sending ${webLogs.length} saved logs to client`);
@@ -474,126 +562,120 @@ io.on('connection', (socket) => {
 
     // Отправляем сохраненные посты при подключении
     console.log(`Sending ${recentPosts.length} saved posts to client`);
-    
-    if (recentPosts.length > 0) {
-        // Сортируем посты: новые сначала (по убыванию времени)
-        const sortedPosts = [...recentPosts].sort((a, b) => {
-            const timeA = new Date(a.timestamp).getTime();
-            const timeB = new Date(b.timestamp).getTime();
-            return timeB - timeA; // Новые сначала
-        });
-        
-        console.log(`Sorted posts: newest first - ${sortedPosts[0]?.timestamp}, oldest last - ${sortedPosts[sortedPosts.length-1]?.timestamp}`);
-        
-        socket.emit('saved-posts', sortedPosts);
-    }
-    
-    socket.on('clear-logs', () => {
-        webLogs = [];
-        parseTimeStats = { min: Infinity, max: 0, total: 0, count: 0, average: 0 };
-        recentPosts = [];
-        io.emit('logs-cleared');
-        io.emit('parse-stats', parseTimeStats);
-        savePersistedData();
+    recentPosts.forEach(post => {
+        socket.emit('post', post);
     });
-    
-    socket.on('clear-posts', () => {
-        console.log('Clearing recent posts...');
-        recentPosts = [];
-        savePersistedData();
-        io.emit('posts-cleared');
-        console.log('Recent posts cleared');
-    });
-    
+
     socket.on('disconnect', () => {
         console.log('Client disconnected');
     });
+
+    // Очистка логов
+    socket.on('clear-logs', () => {
+        webLogs = [];
+        io.emit('logs-cleared');
+        logger.info('🗑️ Logs cleared by client');
+    });
+
+    // Очистка постов
+    socket.on('clear-posts', () => {
+        recentPosts = [];
+        io.emit('posts-cleared');
+        logger.info('🗑️ Posts cleared by client');
+    });
 });
 
-// Функция для отправки обновлений клиентам
-global.sendStatsUpdate = (data) => {
-    Object.assign(parserStats, data);
-    io.emit('stats', parserStats);
-};
-
-// Новая функция для обработки логов
-global.sendLogUpdate = (logData) => {
-    // Сохраняем лог
-    webLogs.push({
+// Функция для добавления лога
+function addLogToUI(logData) {
+    const timestamp = new Date().toLocaleTimeString();
+    const logEntry = {
         ...logData,
-        timestamp: new Date().toLocaleTimeString()
-    });
+        timestamp: timestamp
+    };
     
-    // Ограничиваем количество логов (последние 500)
+    webLogs.push(logEntry);
+    
+    // Ограничиваем количество логов в памяти
     if (webLogs.length > 500) {
         webLogs = webLogs.slice(-500);
     }
     
-    // Анализируем время парсинга из сообщения
-    const timeMatch = logData.message.match(/(\d+)ms\)$/);
-    if (timeMatch && (logData.message.includes('No new posts') || logData.message.includes('FOUND POST'))) {
-        const parseTime = parseInt(timeMatch[1]);
-        
-        // Извлекаем username из сообщения
-        const usernameMatch = logData.message.match(/@(\w+):/);
-        const username = usernameMatch ? usernameMatch[1] : null;
-        
-        // Пропускаем первый запрос для каждого пользователя
-        if (username && !firstRequestSkipped.get(username)) {
-            firstRequestSkipped.set(username, true);
-            console.log(`Skipping first request for @${username}: ${parseTime}ms`);
-            return;
-        }
-        
-        parseTimeStats.min = Math.min(parseTimeStats.min, parseTime);
-        parseTimeStats.max = Math.max(parseTimeStats.max, parseTime);
-        parseTimeStats.total += parseTime;
-        parseTimeStats.count++;
-        parseTimeStats.average = Math.round(parseTimeStats.total / parseTimeStats.count);
-        
-        io.emit('parse-stats', parseTimeStats);
-    }
-    
-    // Отправляем лог клиентам
-    io.emit('log', logData);
-    savePersistedData();
-}; 
+    // Отправляем лог всем подключенным клиентам
+    io.emit('log', logEntry);
+}
 
-// Перехватываем отправку постов для сохранения
-const originalEmit = io.emit;
-io.emit = function(event, data) {
-    if (event === 'new-post') {
-        console.log('Saving new post:', data.username, data.content.substring(0, 50));
-        
-        // Сохраняем пост
-        recentPosts.unshift(data);
-        if (recentPosts.length > 100) {
-            recentPosts = recentPosts.slice(0, 100);
-        }
-        
-        // Обновляем статистику
-        parserStats.totalPosts = (parserStats.totalPosts || 0) + 1;
-        
-        savePersistedData();
+// Функция для добавления поста
+function addPostToUI(postData) {
+    const postEntry = {
+        ...postData,
+        foundAt: new Date().toISOString()
+    };
+    
+    recentPosts.unshift(postEntry);
+    
+    // Ограничиваем количество постов в памяти
+    if (recentPosts.length > 100) {
+        recentPosts = recentPosts.slice(0, 100);
     }
     
-    return originalEmit.call(this, event, data);
-};
+    // Отправляем пост всем подключенным клиентам
+    io.emit('post', postEntry);
+}
+
+// Функция обновления статистики
+function updateStats(newStats) {
+    parserStats = { ...parserStats, ...newStats };
+    io.emit('stats', parserStats);
+}
 
 // === ЗАПУСК СЕРВЕРА ===
+
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, async () => {
-    console.log(`Web interface running on http://localhost:${PORT}`);
+
+server.listen(PORT, () => {
+    logger.info(`🚀 Truth Social Parser API Server running on port ${PORT}`);
+    logger.info(`📊 Dashboard: http://localhost:${PORT}`);
+    logger.info(`⚡ Mode: API-only (browsers disabled)`);
     
-    // Инициализация парсера при старте сервера
-    console.log('🔍 Initializing parser at server startup...');
-    try {
-        const StealthParser = require('./stealth-parser');
-        global.parserInstance = new StealthParser();
-        await global.parserInstance.init();
-        global.io = io;
-        console.log('✅ Parser initialized at startup');
-    } catch (error) {
-        console.error('❌ Failed to initialize parser:', error);
-    }
+    addLogToUI({
+        level: 'info',
+        message: `🚀 Server started in API mode on port ${PORT}`
+    });
+    
+    updateStats({
+        running: false,
+        profilesCount: 0,
+        accountsCount: 0,
+        postsFound: 0,
+        lastActivity: new Date().toISOString()
+    });
 });
+
+// Graceful shutdown - исправленная версия
+let isShuttingDown = false;
+
+process.on('SIGINT', () => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    
+    logger.info('🛑 Shutting down server...');
+    
+    // Останавливаем все интервалы мониторинга
+    for (const [username, intervalId] of monitoringIntervals) {
+        clearInterval(intervalId);
+    }
+    monitoringIntervals.clear();
+    
+    server.close(() => {
+        logger.info('✅ Server closed');
+        process.exit(0);
+    });
+    
+    // Принудительно завершаем через 2 секунды
+    setTimeout(() => {
+        logger.info('🔪 Force closing server');
+        process.exit(1);
+    }, 2000);
+});
+
+module.exports = app;

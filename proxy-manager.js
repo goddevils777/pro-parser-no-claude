@@ -1,240 +1,306 @@
-// Заменить класс ProxyManager в proxy-manager.js
+// proxy-manager-v2.js - Умный менеджер прокси с white/black листами
+const fs = require('fs-extra');
+const logger = require('./logger');
+
 class ProxyManager {
-    constructor(proxyListPath) {
-        this.proxyListPath = proxyListPath;
-        this.proxies = [];
+    constructor() {
+        this.allProxies = []; // Все прокси из файла
+        this.whiteList = new Set(); // Рабочие прокси для Truth Social
+        this.blackList = new Set(); // Заблокированные прокси
         this.currentIndex = 0;
-        this.workingProxies = new Set(); // Вайтлист - проверенные рабочие IP
-        this.blacklistedProxies = new Set(); // Блэклист - заблокированные IP
-        this.usedProxies = new Set(); // Список IP используемых активными браузерами
-        this.lastUsedIndex = new Map(); // Отслеживание последнего использования IP
-        this.loadProxies();
-        this.loadWorkingProxies();
-        this.loadBlacklistedProxies();
+        
+        // Статистика
+        this.stats = {
+            total: 0,
+            whiteListed: 0,
+            blackListed: 0,
+            untested: 0,
+            lastUpdate: null
+        };
+        
+        // Файлы для сохранения
+        this.whiteListFile = './data/proxy-whitelist.json';
+        this.blackListFile = './data/proxy-blacklist.json';
+        this.statsFile = './data/proxy-stats.json';
+        
+        this.init();
     }
 
-    // Загрузка сохраненных рабочих IP из файла
-    async loadWorkingProxies() {
+    // Инициализация
+    async init() {
         try {
-            const fs = require('fs-extra');
-            const workingProxiesPath = './data/working-proxies.json';
+            await this.loadProxies();
+            await this.loadWhiteList();
+            await this.loadBlackList();
+            await this.loadStats();
             
-            if (await fs.pathExists(workingProxiesPath)) {
-                const workingProxiesList = await fs.readJson(workingProxiesPath);
-                this.workingProxies = new Set(workingProxiesList);
-                console.log(`📋 Loaded ${this.workingProxies.size} working IP addresses (whitelist)`);
-            }
+            logger.info(`📊 Proxy Manager initialized: ${this.stats.total} total, ${this.stats.whiteListed} white, ${this.stats.blackListed} black`);
         } catch (error) {
-            console.warn(`Failed to load working proxies: ${error.message}`);
+            logger.error(`Error initializing ProxyManager: ${error.message}`);
         }
     }
 
-    // Загрузка заблокированных IP из файла
-    async loadBlacklistedProxies() {
+    // Загрузка всех прокси из файла
+    async loadProxies() {
         try {
-            const fs = require('fs-extra');
-            const blacklistedProxiesPath = './data/blacklisted-proxies.json';
+            const proxyFile = './port_list.txt';
+            if (await fs.pathExists(proxyFile)) {
+                const content = await fs.readFile(proxyFile, 'utf8');
+                this.allProxies = content.split('\n')
+                    .filter(line => line.trim())
+                    .map(line => line.trim());
+                
+                this.stats.total = this.allProxies.length;
+                logger.info(`📡 Loaded ${this.allProxies.length} proxies from file`);
+            } else {
+                logger.warn('⚠️ No proxy file found');
+                this.allProxies = [];
+            }
+        } catch (error) {
+            logger.error(`Error loading proxies: ${error.message}`);
+        }
+    }
+
+    // Загрузка белого списка
+    async loadWhiteList() {
+        try {
+            if (await fs.pathExists(this.whiteListFile)) {
+                const whiteListData = await fs.readJson(this.whiteListFile);
+                this.whiteList = new Set(whiteListData);
+                this.stats.whiteListed = this.whiteList.size;
+                logger.info(`✅ Loaded ${this.whiteList.size} whitelisted proxies`);
+            }
+        } catch (error) {
+            logger.error(`Error loading whitelist: ${error.message}`);
+        }
+    }
+
+    // Загрузка черного списка
+    async loadBlackList() {
+        try {
+            if (await fs.pathExists(this.blackListFile)) {
+                const blackListData = await fs.readJson(this.blackListFile);
+                this.blackList = new Set(blackListData);
+                this.stats.blackListed = this.blackList.size;
+                logger.info(`❌ Loaded ${this.blackList.size} blacklisted proxies`);
+            }
+        } catch (error) {
+            logger.error(`Error loading blacklist: ${error.message}`);
+        }
+    }
+
+    // Загрузка статистики
+    async loadStats() {
+        try {
+            if (await fs.pathExists(this.statsFile)) {
+                const savedStats = await fs.readJson(this.statsFile);
+                this.stats = { ...this.stats, ...savedStats };
+            }
             
-            if (await fs.pathExists(blacklistedProxiesPath)) {
-                const blacklistedProxiesList = await fs.readJson(blacklistedProxiesPath);
-                this.blacklistedProxies = new Set(blacklistedProxiesList);
-                console.log(`📋 Loaded ${this.blacklistedProxies.size} blacklisted IP addresses`);
-            }
+            this.updateStats();
         } catch (error) {
-            console.warn(`Failed to load blacklisted proxies: ${error.message}`);
+            logger.error(`Error loading stats: ${error.message}`);
         }
     }
 
-    // Сохранение рабочих IP в файл
-    async saveWorkingProxies() {
+    // Сохранение белого списка
+    async saveWhiteList() {
         try {
-            const fs = require('fs-extra');
             await fs.ensureDir('./data');
-            const workingProxiesList = Array.from(this.workingProxies);
-            await fs.writeJson('./data/working-proxies.json', workingProxiesList);
-            console.log(`💾 Saved ${workingProxiesList.length} working IP addresses (whitelist)`);
+            await fs.writeJson(this.whiteListFile, Array.from(this.whiteList));
+            logger.info(`💾 Saved whitelist: ${this.whiteList.size} proxies`);
         } catch (error) {
-            console.error(`Failed to save working proxies: ${error.message}`);
+            logger.error(`Error saving whitelist: ${error.message}`);
         }
     }
 
-    // Сохранение заблокированных IP в файл
-    async saveBlacklistedProxies() {
+    // Сохранение черного списка
+    async saveBlackList() {
         try {
-            const fs = require('fs-extra');
             await fs.ensureDir('./data');
-            const blacklistedProxiesList = Array.from(this.blacklistedProxies);
-            await fs.writeJson('./data/blacklisted-proxies.json', blacklistedProxiesList);
-            console.log(`💾 Saved ${blacklistedProxiesList.length} blacklisted IP addresses`);
+            await fs.writeJson(this.blackListFile, Array.from(this.blackList));
+            logger.info(`💾 Saved blacklist: ${this.blackList.size} proxies`);
         } catch (error) {
-            console.error(`Failed to save blacklisted proxies: ${error.message}`);
+            logger.error(`Error saving blacklist: ${error.message}`);
         }
     }
 
-    // Добавление IP в вайтлист
-    async addWorkingProxy(proxyUrl) {
-        if (proxyUrl && !this.workingProxies.has(proxyUrl)) {
-            this.workingProxies.add(proxyUrl);
-            // Удаляем из блэклиста если добавляем в вайтлист
-            if (this.blacklistedProxies.has(proxyUrl)) {
-                this.blacklistedProxies.delete(proxyUrl);
-                await this.saveBlacklistedProxies();
-            }
-            await this.saveWorkingProxies();
-            console.log(`✅ Added working IP to whitelist: ${proxyUrl}`);
+    // Сохранение статистики
+    async saveStats() {
+        try {
+            await fs.ensureDir('./data');
+            await fs.writeJson(this.statsFile, this.stats);
+        } catch (error) {
+            logger.error(`Error saving stats: ${error.message}`);
         }
     }
 
-    // Добавление IP в блэклист
-    async addBlacklistedProxy(proxyUrl, reason = 'blocked') {
-        if (proxyUrl && !this.blacklistedProxies.has(proxyUrl)) {
-            this.blacklistedProxies.add(proxyUrl);
-            // Удаляем из вайтлиста если добавляем в блэклист
-            if (this.workingProxies.has(proxyUrl)) {
-                this.workingProxies.delete(proxyUrl);
-                await this.saveWorkingProxies();
-            }
-            await this.saveBlacklistedProxies();
-            console.log(`❌ Added IP to blacklist (${reason}): ${proxyUrl}`);
-        }
+    // Обновление статистики
+    updateStats() {
+        this.stats.whiteListed = this.whiteList.size;
+        this.stats.blackListed = this.blackList.size;
+        this.stats.untested = this.stats.total - this.stats.whiteListed - this.stats.blackListed;
+        this.stats.lastUpdate = new Date().toISOString();
     }
 
-    // Удаление IP из вайтлиста (если перестал работать)
-    async removeWorkingProxy(proxyUrl) {
-        if (proxyUrl && this.workingProxies.has(proxyUrl)) {
-            this.workingProxies.delete(proxyUrl);
-            // Автоматически добавляем в блэклист
-            await this.addBlacklistedProxy(proxyUrl, 'stopped working');
-            console.log(`❌ Moved IP from whitelist to blacklist: ${proxyUrl}`);
+    // Получить лучший доступный прокси
+    getBestProxy() {
+        // Приоритет 1: Белый список (проверенные рабочие)
+        if (this.whiteList.size > 0) {
+            const whiteProxies = Array.from(this.whiteList);
+            const selectedProxy = whiteProxies[Math.floor(Math.random() * whiteProxies.length)];
+            logger.info(`🟢 Using whitelisted proxy: ${selectedProxy}`);
+            return selectedProxy;
         }
-    }
 
-    // Пометить IP как используемый
-    markProxyAsUsed(proxyUrl) {
-        if (proxyUrl) {
-            this.usedProxies.add(proxyUrl);
-            this.lastUsedIndex.set(proxyUrl, Date.now());
-            console.log(`🔒 Marked IP as used: ${proxyUrl} (${this.usedProxies.size} IPs in use)`);
-        }
-    }
-
-    // Освободить IP (когда браузер закрывается)
-    releaseProxy(proxyUrl) {
-        if (proxyUrl && this.usedProxies.has(proxyUrl)) {
-            this.usedProxies.delete(proxyUrl);
-            console.log(`🔓 Released IP: ${proxyUrl} (${this.usedProxies.size} IPs in use)`);
-        }
-    }
-
-    // Получение следующего прокси с улучшенной логикой
-    getNextProxy() {
-        if (this.proxies.length === 0) return null;
-
-        // Фильтруем доступные IP (не в блэклисте, не используемые)
-        const availableProxies = this.proxies.filter(ip => 
-            !this.blacklistedProxies.has(ip) && !this.usedProxies.has(ip)
+        // Приоритет 2: Непроверенные прокси (исключая черный список)
+        const untestedProxies = this.allProxies.filter(proxy => 
+            !this.whiteList.has(proxy) && !this.blackList.has(proxy)
         );
 
-        if (availableProxies.length === 0) {
-            console.warn(`⚠️ No available IPs! Total: ${this.proxies.length}, Blacklisted: ${this.blacklistedProxies.size}, Used: ${this.usedProxies.size}`);
-            
-            // В крайнем случае берем любой IP (даже используемый, но не заблокированный)
-            const notBlacklisted = this.proxies.filter(ip => !this.blacklistedProxies.has(ip));
-            if (notBlacklisted.length > 0) {
-                const proxy = notBlacklisted[this.currentIndex % notBlacklisted.length];
-                this.currentIndex++;
-                console.log(`🔄 Using non-blacklisted IP (may be in use): ${proxy}`);
-                return proxy;
-            }
-            
-            return null;
+        if (untestedProxies.length > 0) {
+            const selectedProxy = untestedProxies[Math.floor(Math.random() * untestedProxies.length)];
+            logger.info(`🟡 Using untested proxy: ${selectedProxy}`);
+            return selectedProxy;
         }
 
-        // 1. Приоритет: рабочие IP из вайтлиста (доступные)
-        const availableWorkingProxies = availableProxies.filter(ip => this.workingProxies.has(ip));
-        
-        if (availableWorkingProxies.length > 0) {
-            // Выбираем наименее недавно использованный рабочий IP
-            const sortedWorking = availableWorkingProxies.sort((a, b) => {
-                const timeA = this.lastUsedIndex.get(a) || 0;
-                const timeB = this.lastUsedIndex.get(b) || 0;
-                return timeA - timeB;
-            });
-            
-            const proxy = sortedWorking[0];
-            console.log(`🎯 Using priority working IP: ${proxy} (${availableWorkingProxies.length} working IPs available)`);
-            return proxy;
+        // Приоритет 3: Случайный из всех (если все в черном списке)
+        if (this.allProxies.length > 0) {
+            const selectedProxy = this.allProxies[Math.floor(Math.random() * this.allProxies.length)];
+            logger.warn(`🔄 Using random proxy (all tested): ${selectedProxy}`);
+            return selectedProxy;
         }
 
-        // 2. Обычные доступные IP
-        // Равномерно распределяем по всем доступным IP
-        const proxy = availableProxies[this.currentIndex % availableProxies.length];
-        this.currentIndex++;
+        logger.error('❌ No proxies available');
+        return null;
+    }
+
+    // Получить следующий прокси по порядку (для тестирования)
+    getNextProxy() {
+        if (this.allProxies.length === 0) return null;
         
-        console.log(`🔄 Using regular available IP: ${proxy} (${availableProxies.length} IPs available)`);
+        const proxy = this.allProxies[this.currentIndex];
+        this.currentIndex = (this.currentIndex + 1) % this.allProxies.length;
+        
         return proxy;
     }
 
-    // Получить детальную статистику IP
-    getProxiesStats() {
-        const totalProxies = this.proxies.length;
-        const blacklisted = this.blacklistedProxies.size;
-        const working = this.workingProxies.size;
-        const used = this.usedProxies.size;
-        const available = this.proxies.filter(ip => 
-            !this.blacklistedProxies.has(ip) && !this.usedProxies.has(ip)
-        ).length;
+    // Добавить прокси в белый список (рабочий для Truth Social)
+    async addToWhiteList(proxy, reason = 'working') {
+        if (!proxy) return;
+        
+        this.whiteList.add(proxy);
+        this.blackList.delete(proxy); // Убираем из черного списка если был там
+        
+        logger.info(`✅ Added to whitelist: ${proxy} (${reason})`);
+        
+        this.updateStats();
+        await this.saveWhiteList();
+        await this.saveStats();
+    }
 
+    // Добавить прокси в черный список (не работает с Truth Social)
+    async addToBlackList(proxy, reason = 'blocked') {
+        if (!proxy) return;
+        
+        this.blackList.add(proxy);
+        this.whiteList.delete(proxy); // Убираем из белого списка если был там
+        
+        logger.warn(`❌ Added to blacklist: ${proxy} (${reason})`);
+        
+        this.updateStats();
+        await this.saveBlackList();
+        await this.saveStats();
+    }
+
+    // Проверить статус прокси
+    getProxyStatus(proxy) {
+        if (this.whiteList.has(proxy)) return 'whitelisted';
+        if (this.blackList.has(proxy)) return 'blacklisted';
+        return 'untested';
+    }
+
+    // Получить статистику
+    getStats() {
+        this.updateStats();
         return {
-            total: totalProxies,
-            working: working,
-            blacklisted: blacklisted,
-            used: used,
-            available: available,
-            workingPercentage: totalProxies > 0 ? Math.round((working / totalProxies) * 100) : 0,
-            blacklistedPercentage: totalProxies > 0 ? Math.round((blacklisted / totalProxies) * 100) : 0,
-            availablePercentage: totalProxies > 0 ? Math.round((available / totalProxies) * 100) : 0
+            ...this.stats,
+            successRate: this.stats.total > 0 ? 
+                Math.round((this.stats.whiteListed / this.stats.total) * 100) : 0
         };
     }
 
-    // Очистка блэклиста (для администрирования)
-    async clearBlacklist() {
-        this.blacklistedProxies.clear();
-        await this.saveBlacklistedProxies();
-        console.log(`🗑️ Blacklist cleared`);
-    }
-
-    // Остальные методы остаются без изменений...
-    loadProxies() {
-        try {
-            const fs = require('fs');
-            const data = fs.readFileSync(this.proxyListPath, 'utf8');
-            this.proxies = data.split('\n')
-                .map(line => line.trim())
-                .filter(line => line.length > 0);
-            console.log(`Loaded ${this.proxies.length} proxies`);
-        } catch (error) {
-            console.error('Failed to load proxies:', error.message);
-            this.proxies = [];
-        }
-    }
-
-    parseProxy(proxyUrl) {
-        if (!proxyUrl) return null;
+    // Очистить черный список (для переотестирования)
+    async clearBlackList() {
+        const count = this.blackList.size;
+        this.blackList.clear();
         
-        try {
-            const url = new URL(proxyUrl);
-            return {
-                server: `${url.hostname}:${url.port}`,
-                username: url.username,
-                password: url.password
-            };
-        } catch (error) {
-            console.error('Failed to parse proxy:', proxyUrl);
-            return null;
+        logger.info(`🗑️ Cleared blacklist: ${count} proxies moved back to untested`);
+        
+        this.updateStats();
+        await this.saveBlackList();
+        await this.saveStats();
+        
+        return count;
+    }
+
+    // Получить лучшие прокси для тестирования
+    getProxiesForTesting(limit = 5) {
+        // Сначала непроверенные
+        const untested = this.allProxies.filter(proxy => 
+            !this.whiteList.has(proxy) && !this.blackList.has(proxy)
+        );
+        
+        if (untested.length >= limit) {
+            return untested.slice(0, limit);
         }
+        
+        // Если непроверенных мало, добавляем из белого списка
+        const whitelisted = Array.from(this.whiteList);
+        const result = [...untested];
+        
+        const needed = limit - result.length;
+        if (needed > 0 && whitelisted.length > 0) {
+            const additional = whitelisted.slice(0, needed);
+            result.push(...additional);
+        }
+        
+        return result;
+    }
+
+    // Получить отчет о состоянии прокси
+    getReport() {
+        const stats = this.getStats();
+        
+        return {
+            summary: `${stats.total} total, ${stats.whiteListed} working (${stats.successRate}%), ${stats.blackListed} blocked, ${stats.untested} untested`,
+            details: stats,
+            recommendations: this.getRecommendations()
+        };
+    }
+
+    // Получить рекомендации
+    getRecommendations() {
+        const recommendations = [];
+        
+        if (this.stats.whiteListed === 0) {
+            recommendations.push('No working proxies found. Start testing proxies.');
+        }
+        
+        if (this.stats.successRate < 10) {
+            recommendations.push('Low success rate. Consider getting better proxy sources.');
+        }
+        
+        if (this.stats.untested > this.stats.whiteListed * 2) {
+            recommendations.push('Many untested proxies available. Run proxy testing.');
+        }
+        
+        if (this.stats.blackListed > this.stats.total * 0.8) {
+            recommendations.push('Too many blocked proxies. Consider clearing blacklist for retesting.');
+        }
+        
+        return recommendations;
     }
 }
-
 
 module.exports = ProxyManager;

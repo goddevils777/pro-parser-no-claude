@@ -1,20 +1,24 @@
 {
-  "name": "truth-social-parser",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "name": "truth-social-parser-api",
+  "version": "2.0.0",
+  "description": "Truth Social Parser - API Version (без браузеров)",
+  "main": "app.js",
   "scripts": {
     "start": "node app.js",
     "dev": "node app.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
+  "keywords": [
+    "truth-social",
+    "parser",
+    "api",
+    "social-media"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
     "axios": "^1.11.0",
-    "chrome-launcher": "^1.2.0",
     "cloudscraper": "^4.6.0",
     "dotenv": "^17.2.1",
     "ejs": "^3.1.10",
@@ -23,15 +27,12 @@
     "https-proxy-agent": "^7.0.6",
     "multer": "^2.0.2",
     "node-telegram-bot-api": "^0.66.0",
-    "playwright": "^1.54.1",
-    "playwright-extra": "^4.3.6",
-    "playwright-extra-plugin-stealth": "^0.0.1",
-    "puppeteer": "^24.15.0",
-    "puppeteer-cluster": "^0.24.0",
     "socket.io": "^4.8.1",
     "socks-proxy-agent": "^8.0.5",
-    "tesseract.js": "^6.0.1",
     "winston": "^3.17.0",
     "ws": "^8.18.3"
+  },
+  "engines": {
+    "node": ">=16.0.0"
   }
 }
