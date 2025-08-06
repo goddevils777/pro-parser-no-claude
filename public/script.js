@@ -119,8 +119,8 @@ async function setAuthToken() {
         return;
     }
     
-    if (!token.startsWith('ey')) {
-        alert('Invalid token format. Bearer tokens usually start with "ey"');
+    if (token.length < 30) {
+        alert('Token too short. Please enter a valid Bearer token (minimum 30 characters)');
         return;
     }
     
@@ -146,8 +146,11 @@ async function setAuthToken() {
         if (result.success) {
             authStatusText.textContent = 'Authorized';
             authStatusText.className = 'status running';
+                        // Обновляем отображение токена
+            updateTokenDisplay(result.token);
             authTokenBtn.textContent = '✅ Token Set';
             authTokenBtn.className = 'btn btn-success';
+            
             
             // Очищаем поле токена
             authTokenInput.value = '';
@@ -210,16 +213,21 @@ async function checkAuthStatus() {
         if (status.isAuthorized) {
             authStatusText.textContent = 'Authorized';
             authStatusText.className = 'status running';
-            authLoginBtn.textContent = '✅ Logged In';
-            authLoginBtn.className = 'btn btn-success';
-            authLoginBtn.disabled = true;
+            
+            // Получаем токен с сервера и отображаем
+            if (status.hasToken) {
+                const tokenResponse = await fetch('/api/auth/current-token');
+                const tokenData = await tokenResponse.json();
+                if (tokenData.token) {
+                    updateTokenDisplay(tokenData.token);
+                }
+            }
         }
         
     } catch (error) {
         console.error('Error checking auth status:', error);
     }
 }
-
 // Добавление профиля по Enter
 if (usernameInput) {
     usernameInput.addEventListener('keypress', (e) => {
@@ -768,9 +776,11 @@ async function confirmAuthorization() {
             // Вставляем токен в поле
             authTokenInput.value = result.token;
             
-            // Обновляем статус авторизации
+            // АВТОМАТИЧЕСКИ сохраняем токен (токен уже сохранен на сервере!)
             authStatusText.textContent = 'Authorized';
             authStatusText.className = 'status running';
+            authTokenBtn.textContent = '✅ Token Active';
+            authTokenBtn.className = 'btn btn-success';
             
             // Сбрасываем кнопки браузера
             resetBrowserButtons();
@@ -830,6 +840,26 @@ function resetBrowserButtons() {
     confirmAuthBtn.disabled = true;
     confirmAuthBtn.textContent = 'I\'m Authorized';
     confirmAuthBtn.className = 'btn btn-success';
+}
+
+// Обновление отображения токена
+function updateTokenDisplay(token) {
+    const tokenDisplay = document.getElementById('auth-token-display');
+    const tokenText = document.getElementById('current-token-text');
+    const copyBtn = document.getElementById('copy-token-btn');
+    
+    if (token) {
+        tokenText.textContent = token.substring(0, 20) + '...';
+        tokenDisplay.style.display = 'flex';
+        
+        copyBtn.onclick = () => {
+            navigator.clipboard.writeText(token);
+            copyBtn.textContent = '✅ Copied';
+            setTimeout(() => copyBtn.textContent = 'Copy', 2000);
+        };
+    } else {
+        tokenDisplay.style.display = 'none';
+    }
 }
 
 // Загружаем данные при загрузке страницы

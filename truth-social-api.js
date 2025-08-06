@@ -337,24 +337,6 @@ class TruthSocialAPI {
         }
     }
 
-    // Загрузка прокси из файла
-    async loadProxies() {
-        try {
-            const proxyFile = './port_list.txt';
-            if (await fs.pathExists(proxyFile)) {
-                const content = await fs.readFile(proxyFile, 'utf8');
-                this.proxies = content.split('\n')
-                    .filter(line => line.trim())
-                    .map(line => line.trim());
-                
-                logger.info(`📡 Loaded ${this.proxies.length} proxies for API requests`);
-            } else {
-                logger.warn('⚠️ No proxy file found, using direct connection');
-            }
-        } catch (error) {
-            logger.error(`Error loading proxies: ${error.message}`);
-        }
-    }
 
     // Получить случайный User-Agent
     getRandomUserAgent() {
@@ -362,14 +344,15 @@ class TruthSocialAPI {
     }
 
     // Получить следующий прокси
-    getNextProxy() {
-        if (this.proxies.length === 0) return null;
-        
-        const proxy = this.proxies[this.currentProxyIndex];
-        this.currentProxyIndex = (this.currentProxyIndex + 1) % this.proxies.length;
-        
-        return proxy;
-    }
+// Получить следующий прокси (ИСПРАВЛЕНО)
+getNextProxy() {
+    if (this.allProxies.length === 0) return null;  // ← изменить
+    
+    const proxy = this.allProxies[this.currentProxyIndex];  // ← изменить
+    this.currentProxyIndex = (this.currentProxyIndex + 1) % this.allProxies.length;  // ← изменить
+    
+    return proxy;
+}
 
     // Создать прокси агент
     createProxyAgent(proxyUrl) {
@@ -386,101 +369,146 @@ class TruthSocialAPI {
             return null;
         }
     }
-    // Получить заголовки для запроса
+
+
+// Получить заголовки для запроса (С ОТЛАДКОЙ)
     getHeaders(token = null) {
+        // Определяем какой токен использовать
+        const authToken = token || this.authToken;
+        
+        // ОТЛАДОЧНОЕ логирование
+        logger.info(`🔍 Getting headers: token param=${!!token}, this.authToken=${!!this.authToken}, isAuthorized=${this.isAuthorized}`);
+        if (authToken) {
+            logger.info(`🎫 Using Bearer token: ${authToken.substring(0, 20)}...`);
+        } else {
+            logger.warn(`⚠️ No token available for API request!`);
+        }
+        
+        // Улучшенные заголовки для обхода Cloudflare
         const headers = {
-            'User-Agent': this.getRandomUserAgent(),
-            'Accept': 'application/json, text/plain, */*',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-origin',
-            'Referer': 'https://truthsocial.com/',
-            'Origin': 'https://truthsocial.com'
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+            'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"'
         };
 
-        // Используем токен из параметра или сохраненный токен авторизации
-        const authToken = token || this.authToken;
+        // Добавляем Authorization если есть токен
         if (authToken) {
             headers['Authorization'] = `Bearer ${authToken}`;
+            logger.info(`✅ Added Authorization header: Bearer ${authToken.substring(0, 20)}...`);
+        } else {
+            logger.warn(`❌ No Authorization header added - requests will fail!`);
         }
+
+        // Добавляем Referer для правдоподобности
+        headers['Referer'] = 'https://truthsocial.com/';
+        headers['Origin'] = 'https://truthsocial.com';
 
         return headers;
     }
-
-    // Выполнить запрос с обходом Cloudflare
+// Выполнить запрос с обходом Cloudflare (МНОЖЕСТВЕННЫЕ ПОПЫТКИ ПРОКСИ)
     async makeRequest(url, options = {}) {
         this.requestCount++;
-        const startTime = Date.now();
+        const maxProxyRetries = 5; // Пробуем 5 разных прокси
         
-        try {
-            const proxy = this.getNextProxy();
-            const proxyAgent = this.createProxyAgent(proxy);
+        for (let attempt = 1; attempt <= maxProxyRetries; attempt++) {
+            const startTime = Date.now();
             
-            const requestOptions = {
-                url: url,
-                headers: this.getHeaders(options.token),
-                timeout: 15000,
-                followRedirect: true,
-                maxRedirects: 5,
-                // НЕ парсим как JSON автоматически
-                json: false,
-                ...options
-            };
-
-            // Добавляем прокси если есть
-            if (proxyAgent) {
-                requestOptions.agent = proxyAgent;
-            }
-
-            logger.info(`📡 Making request to: ${url} ${proxy ? `via ${proxy}` : '(direct)'}`);
-            
-            // Используем cloudscraper для обхода Cloudflare
-            const response = await cloudscraper(requestOptions);
-            
-            const responseTime = Date.now() - startTime;
-            this.successCount++;
-            
-            logger.info(`✅ Request successful (${responseTime}ms): ${url}`);
-            
-            // Определяем тип ответа
-            let data;
             try {
-                // Пробуем парсить как JSON
-                data = typeof response === 'string' ? JSON.parse(response) : response;
-            } catch (e) {
-                // Если не JSON, возвращаем как есть (HTML)
-                data = response;
+                const proxy = this.getBestProxy(); // Получаем лучший доступный прокси
+                const proxyAgent = this.createProxyAgent(proxy);
+                
+                const requestOptions = {
+                    url: url,
+                    headers: this.getHeaders(options.token),
+                    timeout: 15000,
+                    followRedirect: true,
+                    maxRedirects: 5,
+                    json: false,
+                    ...options
+                };
+
+                // Добавляем прокси если есть
+                if (proxyAgent) {
+                    requestOptions.agent = proxyAgent;
+                }
+
+                logger.info(`📡 Making request to: ${url} ${proxy ? `via ${proxy.split('@')[0]}@***` : '(direct)'} (attempt ${attempt}/${maxProxyRetries})`);
+                
+                // Используем cloudscraper для обхода Cloudflare
+                const response = await cloudscraper(requestOptions);
+                
+                const responseTime = Date.now() - startTime;
+                this.successCount++;
+                
+                logger.info(`✅ Request successful (${responseTime}ms): ${url}`);
+                
+                // Добавляем прокси в белый список если он работает
+                if (proxy) {
+                    await this.addToWhiteList(proxy, 'api_success');
+                }
+                
+                // Определяем тип ответа
+                let data;
+                try {
+                    data = typeof response === 'string' ? JSON.parse(response) : response;
+                } catch (e) {
+                    data = response;
+                }
+                
+                return {
+                    success: true,
+                    data: data,
+                    responseTime: responseTime,
+                    proxy: proxy,
+                    isHTML: typeof data === 'string' && data.includes('<html')
+                };
+                
+            } catch (error) {
+                const responseTime = Date.now() - startTime;
+                
+                logger.error(`❌ Request failed (${responseTime}ms) attempt ${attempt}/${maxProxyRetries}: ${error.message}`);
+                
+                // Добавляем прокси в черный список если он заблокирован
+                const currentProxy = this.getBestProxy();
+                if (currentProxy && (error.message.includes('403') || error.message.includes('cloudflare') || error.message.includes('blocked'))) {
+                    await this.addToBlackList(currentProxy, 'api_blocked');
+                    logger.warn(`❌ Added blocked proxy to blacklist: ${currentProxy.split('@')[0]}@***`);
+                }
+                
+                // Если это последняя попытка - возвращаем ошибку
+                if (attempt === maxProxyRetries) {
+                    this.errorCount++;
+                    
+                    // Если это ошибка Cloudflare, пробуем другой подход
+                    if (error.message.includes('cloudflare') || error.message.includes('403') || error.message.includes('captcha')) {
+                        logger.warn('🛡️ All proxies blocked by Cloudflare, trying fallback method...');
+                        return await this.makeRequestFallback(url, options);
+                    }
+                    
+                    return {
+                        success: false,
+                        error: error.message,
+                        responseTime: responseTime
+                    };
+                }
+                
+                // Пауза перед следующей попыткой
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                logger.info(`🔄 Trying next proxy (${attempt + 1}/${maxProxyRetries})...`);
             }
-            
-            return {
-                success: true,
-                data: data,
-                responseTime: responseTime,
-                proxy: proxy,
-                isHTML: typeof data === 'string' && data.includes('<html')
-            };
-            
-        } catch (error) {
-            this.errorCount++;
-            const responseTime = Date.now() - startTime;
-            
-            logger.error(`❌ Request failed (${responseTime}ms): ${error.message}`);
-            
-            // Если это ошибка Cloudflare, пробуем другой подход
-            if (error.message.includes('cloudflare') || error.message.includes('403') || error.message.includes('captcha')) {
-                logger.warn('🛡️ Cloudflare protection detected, trying alternative method...');
-                return await this.makeRequestFallback(url, options);
-            }
-            
-            return {
-                success: false,
-                error: error.message,
-                responseTime: responseTime
-            };
         }
     }
 
@@ -611,34 +639,66 @@ class TruthSocialAPI {
         }
     }
 
-    // Получить последние посты пользователя через API
+    // Получить последние посты пользователя через API (ИСПРАВЛЕНО)
+   // Получить последние посты пользователя через API (ИСПРАВЛЕНО для последних постов)
     async getUserPosts(username, limit = 20) {
         try {
-            logger.info(`📄 Getting posts for @${username} (limit: ${limit})`);
+            logger.info(`📄 Getting LATEST posts for @${username} (limit: ${limit})`);
             
-            // Сначала получаем ID пользователя
+            // ПРИОРИТЕТ 1: Получаем последние посты через statuses API (самые свежие)
             const accountId = await this.getUserId(username);
-            if (!accountId) {
-                throw new Error(`User @${username} not found`);
+            if (accountId) {
+                logger.info(`👤 Found account ID: ${accountId}`);
+                
+                // Получаем самые свежие посты пользователя
+                const postsUrl = `${this.baseURL}/api/v1/accounts/${accountId}/statuses?limit=${limit}&exclude_replies=true`;
+                logger.info(`🔍 Getting latest posts: ${postsUrl}`);
+                
+                const result = await this.makeRequest(postsUrl);
+                
+                if (result.success && result.data && Array.isArray(result.data)) {
+                    logger.info(`📊 API returned ${result.data.length} raw posts`);
+                    
+                    // ДЕТАЛЬНОЕ логирование первого поста
+                    if (result.data.length > 0) {
+                        const firstPost = result.data[0];
+                        logger.info(`📝 Latest post raw data: ${JSON.stringify(firstPost, null, 2).substring(0, 800)}...`);
+                    }
+                    
+                    const posts = this.formatPosts(result.data, username, limit);
+                    
+                    logger.info(`📊 Formatted ${posts.length} posts for @${username}`);
+                    if (posts.length > 0) {
+                        logger.info(`📝 LATEST post: "${posts[0].content.substring(0, 100)}..." (${posts[0].createdAt})`);
+                    }
+                    
+                    return {
+                        success: true,
+                        posts: posts,
+                        count: posts.length,
+                        accountId: accountId,
+                        method: 'statuses_api'
+                    };
+                }
             }
             
-            // Получаем посты через API
-            const postsUrl = `${this.apiURL}/accounts/${accountId}/statuses?limit=${limit}`;
-            const result = await this.makeRequest(postsUrl);
+            // ПРИОРИТЕТ 2: Fallback на search если statuses не работает
+            logger.info(`🔄 Statuses API failed, trying search API...`);
+            const searchUrl = `${this.baseURL}/api/v2/search?type=statuses&q=from:${username}&limit=${limit}&resolve=true`;
             
-            if (result.success && result.data) {
-                const posts = this.formatPosts(result.data, username);
-                
-                logger.info(`📊 Retrieved ${posts.length} posts for @${username}`);
+            const searchResult = await this.makeRequest(searchUrl);
+            
+            if (searchResult.success && searchResult.data && searchResult.data.statuses) {
+                const posts = this.formatPosts(searchResult.data.statuses, username, limit);
                 return {
                     success: true,
                     posts: posts,
                     count: posts.length,
-                    accountId: accountId
+                    method: 'search_api'
                 };
-            } else {
-                throw new Error(result.error || 'Failed to get posts');
             }
+            
+            throw new Error('Both API methods failed');
             
         } catch (error) {
             logger.error(`❌ Failed to get posts for @${username}: ${error.message}`);
@@ -649,16 +709,39 @@ class TruthSocialAPI {
         }
     }
 
-    // Получить ID пользователя
+    // Получить ID пользователя (ИСПРАВЛЕНО)
     async getUserId(username) {
         try {
-            // Пробуем API lookup
-            const lookupUrl = `${this.apiURL}/accounts/lookup?acct=${username}`;
-            const result = await this.makeRequest(lookupUrl);
+            // Пробуем разные API endpoints для поиска пользователя
+            const endpoints = [
+                `${this.baseURL}/api/v1/accounts/lookup?acct=${username}`,
+                `${this.baseURL}/api/v1/accounts/search?q=${username}&limit=1&resolve=true`,
+                `${this.baseURL}/api/v2/search?type=accounts&q=${username}&limit=1&resolve=true`
+            ];
             
-            if (result.success && result.data && result.data.id) {
-                logger.info(`👤 Found user ID for @${username}: ${result.data.id}`);
-                return result.data.id;
+            for (const endpoint of endpoints) {
+                logger.info(`🔍 Trying user lookup: ${endpoint}`);
+                const result = await this.makeRequest(endpoint);
+                
+                if (result.success && result.data) {
+                    // Для v1/accounts/lookup
+                    if (result.data.id) {
+                        logger.info(`👤 Found user ID for @${username}: ${result.data.id}`);
+                        return result.data.id;
+                    }
+                    
+                    // Для search endpoints
+                    if (Array.isArray(result.data) && result.data.length > 0 && result.data[0].id) {
+                        logger.info(`👤 Found user ID for @${username}: ${result.data[0].id}`);
+                        return result.data[0].id;
+                    }
+                    
+                    // Для v2/search
+                    if (result.data.accounts && result.data.accounts.length > 0 && result.data.accounts[0].id) {
+                        logger.info(`👤 Found user ID for @${username}: ${result.data.accounts[0].id}`);
+                        return result.data.accounts[0].id;
+                    }
+                }
             }
             
             // Если API не работает, парсим HTML
@@ -761,7 +844,7 @@ class TruthSocialAPI {
                             
                             if (data.statuses && Array.isArray(data.statuses)) {
                                 logger.info(`📊 Found ${data.statuses.length} posts in JSON data`);
-                                const formattedPosts = this.formatPosts(data.statuses, username);
+                                const formattedPosts = this.formatPosts(data.statuses, username, limit);
                                 posts.push(...formattedPosts);
                             }
                         }
@@ -902,19 +985,65 @@ class TruthSocialAPI {
         return posts;
     }
 
-    // Форматирование постов в единый формат
-    formatPosts(rawPosts, username) {
-        return rawPosts.map(post => ({
-            id: post.id || `${Date.now()}_${Math.random()}`,
-            content: post.content || post.text || '',
-            createdAt: post.created_at || post.createdAt || new Date().toISOString(),
-            author: username,
-            url: post.url || `${this.baseURL}/@${username}`,
-            reblogsCount: post.reblogs_count || 0,
-            favouritesCount: post.favourites_count || 0,
-            repliesCount: post.replies_count || 0,
-            source: 'api'
-        }));
+// Форматирование постов в единый формат (ИСПРАВЛЕНО для reblog)
+    formatPosts(rawPosts, username, limit = 20) {
+        if (!Array.isArray(rawPosts)) {
+            logger.warn('⚠️ rawPosts is not an array');
+            return [];
+        }
+        
+        return rawPosts.map(post => {
+            let content = '';
+            let createdAt = post.created_at || post.createdAt || new Date().toISOString();
+            let postId = post.id || `${Date.now()}_${Math.random()}`;
+            let originalAuthor = username;
+            
+            // Проверяем если это reblog (репост)
+            if (post.reblog && post.reblog.content) {
+                content = post.reblog.content;
+                createdAt = post.reblog.created_at || createdAt;
+                originalAuthor = post.reblog.account ? post.reblog.account.username : username;
+                
+                logger.info(`🔄 Processing reblog: original by @${originalAuthor}, reposted by @${username}`);
+                
+                // Убираем HTML теги из контента reblog
+                content = content.replace(/<[^>]*>/g, '').trim();
+                
+            } else if (post.content) {
+                // Обычный пост
+                content = post.content;
+                
+                // Убираем HTML теги
+                content = content.replace(/<[^>]*>/g, '').trim();
+                
+            } else if (post.text) {
+                // Альтернативное поле с текстом
+                content = post.text;
+            }
+            
+            // Логируем что получилось
+            if (content) {
+                logger.info(`📝 Formatted post content: "${content.substring(0, 100)}..."`);
+            } else {
+                logger.warn(`⚠️ No content found in post ${postId}`);
+            }
+            
+            return {
+                id: postId,
+                content: content,
+                createdAt: createdAt,
+                author: username,
+                originalAuthor: originalAuthor, // Кто автор оригинального поста
+                url: post.url || `${this.baseURL}/@${username}`,
+                reblogsCount: post.reblogs_count || 0,
+                favouritesCount: post.favourites_count || 0,
+                repliesCount: post.replies_count || 0,
+                isReblog: !!post.reblog,
+                source: 'api'
+            };
+        }).filter(post => post.content && post.content.length > 0) // Фильтруем пустые посты
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)) // Сортируем по времени (новые первые)
+      .slice(0, limit); // Берем только нужное количество
     }
 
     // Мониторинг профиля на новые посты
@@ -1030,15 +1159,15 @@ class TruthSocialAPI {
     }
 
     // Получить статистику API
-    getStats() {
-        return {
-            requests: this.requestCount,
-            success: this.successCount,
-            errors: this.errorCount,
-            successRate: this.requestCount > 0 ? Math.round((this.successCount / this.requestCount) * 100) : 0,
-            proxiesLoaded: this.proxies.length
-        };
-    }
+getStats() {
+    return {
+        requests: this.requestCount,
+        success: this.successCount,
+        errors: this.errorCount,
+        successRate: this.requestCount > 0 ? Math.round((this.successCount / this.requestCount) * 100) : 0,
+        proxiesLoaded: this.allProxies.length  // ← изменить
+    };
+}
 }
 
 module.exports = TruthSocialAPI;

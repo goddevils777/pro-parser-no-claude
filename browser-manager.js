@@ -1,20 +1,83 @@
-// browser-manager.js - Управление браузером для авторизации
+// browser-manager.js - Управление браузером для авторизации (ИСПРАВЛЕННАЯ ВЕРСИЯ)
 const puppeteer = require('puppeteer');
 const logger = require('./logger');
-const TruthSocialAPI = require('./truth-social-api');
-
-
-
+const ProxyManager = require('./proxy-manager');
 
 class BrowserManager {
     constructor(truthSocialAPI = null) {
         this.browser = null;
         this.page = null;
         this.isRunning = false;
-        this.truthSocialAPI = truthSocialAPI; // Сохраняем ссылку на API
+        this.truthSocialAPI = truthSocialAPI;
+        this.proxyManager = new ProxyManager(); // Добавляем ProxyManager
+        this.proxyAuth = null; // Для хранения авторизации прокси
     }
-// Запуск браузера с автоматической сменой IP
-  // Запуск браузера с автоматической сменой IP
+
+    // Инициализация ProxyManager
+    async init() {
+        await this.proxyManager.init();
+        logger.info('🚀 BrowserManager initialized with ProxyManager');
+    }
+
+    // Получение прокси для попытки (ИСПРАВЛЕНО)
+    async getProxyForAttempt(attempt) {
+        try {
+            logger.info(`🔍 Getting proxy for attempt ${attempt}...`);
+            
+            // Получаем лучший прокси от ProxyManager
+            const proxy = this.proxyManager.getBestProxy();
+            
+            if (proxy) {
+                logger.info(`📡 Got proxy: ${proxy.substring(0, 30)}...`);
+                return this.convertProxyFormat(proxy);
+            } else {
+                logger.info(`🔗 No proxy available, using direct connection`);
+                return null;
+            }
+            
+        } catch (error) {
+            logger.warn(`⚠️ Error getting proxy: ${error.message}, using direct connection`);
+            return null;
+        }
+    }
+
+    // Преобразование формата прокси
+    convertProxyFormat(proxy) {
+        try {
+            // Если прокси в формате http://username:password@ip:port
+            if (proxy.includes('://')) {
+                const url = new URL(proxy);
+                const host = url.hostname;
+                const port = url.port;
+                const username = url.username;
+                const password = url.password;
+                
+                // Сохраняем данные авторизации
+                if (username && password) {
+                    this.proxyAuth = {
+                        username: username,
+                        password: password
+                    };
+                    logger.info(`🔐 Proxy auth saved for user: ${username.substring(0, 10)}...`);
+                } else {
+                    this.proxyAuth = null;
+                }
+                
+                // Возвращаем формат ip:port для puppeteer
+                return `${host}:${port}`;
+            } else {
+                // Прокси уже в формате ip:port
+                this.proxyAuth = null;
+                return proxy;
+            }
+            
+        } catch (error) {
+            logger.error(`❌ Failed to convert proxy format: ${error.message}`);
+            return proxy;
+        }
+    }
+
+    // Запуск браузера с автоматической сменой IP
     async startBrowser(maxRetries = 3) {
         logger.info(`🚀 Starting browser with ${maxRetries} max retries...`);
         
@@ -54,75 +117,54 @@ class BrowserManager {
                 // Добавляем прокси
                 if (currentProxy) {
                     browserOptions.args.push(`--proxy-server=${currentProxy}`);
-                    logger.info(`🔗 Added proxy to browser args: ${currentProxy.substring(0, 50)}...`);
+                    logger.info(`🔗 Applied proxy: ${currentProxy}`);
                 }
 
                 // Запускаем браузер
-                logger.info(`🌐 Launching Puppeteer browser...`);
+                logger.info('🚀 Launching browser...');
                 this.browser = await puppeteer.launch(browserOptions);
-                logger.info(`✅ Browser launched successfully`);
                 
+                // Открываем страницу
                 this.page = await this.browser.newPage();
-                logger.info(`✅ New page created`);
                 
-                // Устанавливаем авторизацию прокси если нужна
-                if (currentProxy && this.proxyAuth) {
+                // Настраиваем авторизацию прокси если нужно
+                if (this.proxyAuth) {
                     await this.page.authenticate({
                         username: this.proxyAuth.username,
                         password: this.proxyAuth.password
                     });
-                    logger.info(`🔐 Proxy authentication set`);
+                    logger.info(`🔐 Proxy authentication configured`);
                 }
                 
-                // Устанавливаем User-Agent
+                // Настраиваем User-Agent
                 await this.page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-                logger.info(`✅ User-Agent set`);
                 
-                // Тестируем IP - пробуем открыть Truth Social
-                logger.info(`🧪 Testing IP connection to Truth Social...`);
-                
-               await this.page.goto('https://truthsocial.com/', {
-                    waitUntil: 'domcontentloaded',
-                    timeout: 15000
+                // Тестируем IP - идем на Truth Social
+                logger.info('🧪 Testing Truth Social access...');
+                await this.page.goto('https://truthsocial.com/auth/sign_in', { 
+                    waitUntil: 'networkidle2',
+                    timeout: 30000 
                 });
-                logger.info(`✅ Page loaded successfully`);
-
-                // Ждем дольше для Cloudflare автопроверки
-                await new Promise(resolve => setTimeout(resolve, 8000));
-                logger.info(`✅ Extended wait completed`);
                 
-                // Проверяем еще раз после ожидания
-                const pageContent = await this.page.content();
+                // Ждем загрузки
+                await this.sleep(3000);
+                
+                // Проверяем заголовок страницы
                 const title = await this.page.title();
+                logger.info(`📄 Page title: "${title}"`);
                 
-                logger.info(`📄 Final page title: "${title}"`);
-                logger.info(`📄 Final page content length: ${pageContent.length} chars`);
-                
-                // Если все еще Cloudflare после долгого ожидания - оставляем открытым
-                if (title.toLowerCase().includes('cloudflare')) {
-                    logger.info(`🛡️ Cloudflare still active. Browser stays open for manual verification.`);
-                    this.isRunning = true;
+                // Проверяем что это НЕ Cloudflare и НЕ блокировка
+                if (title && 
+                    !title.includes('Cloudflare') && 
+                    !title.includes('Access denied') && 
+                    !title.includes('Blocked') &&
+                    (title.includes('Truth Social') || title.includes('Sign in') || title.includes('Login'))) {
                     
-                    return { 
-                        success: true, 
-                        message: `Browser opened but Cloudflare verification required. Please complete verification manually.`,
-                        proxy: currentProxy || 'direct',
-                        needsVerification: true
-                    };
-                }
-                
-                // Проверки успешности для других случаев
-                const isValidPage = (
-                    title.toLowerCase().includes('truth social') ||
-                    title.toLowerCase().includes('sign in') ||
-                    pageContent.includes('truth social') ||
-                    pageContent.includes('sign_in')
-                ) && !pageContent.includes('blocked');
-                
-                logger.info(`✅ Page validation result: ${isValidPage}`);
-                
-                if (isValidPage) {
                     // IP РАБОТАЕТ!
+                    if (currentProxy) {
+                        await this.addProxyToWhiteList(currentProxy);
+                    }
+                    
                     this.isRunning = true;
                     logger.info(`✅ IP ${currentProxy ? currentProxy.substring(0, 30) + '***' : 'direct'} WORKS! Browser ready.`);
                     
@@ -139,6 +181,11 @@ class BrowserManager {
             } catch (error) {
                 // IP не работает - закрываем браузер и пробуем следующий
                 logger.error(`❌ Attempt ${attempt} FAILED: ${error.message}`);
+                
+                // Добавляем прокси в черный список
+                if (currentProxy) {
+                    await this.addProxyToBlackList(currentProxy);
+                }
                 
                 // ПОЛНОСТЬЮ закрываем браузер
                 await this.forceCloseBrowser();
@@ -233,29 +280,126 @@ class BrowserManager {
             let token = null;
 
             // Поиск в localStorage
+            // Поиск в localStorage (ИСПРАВЛЕНО)
             for (const [key, value] of Object.entries(tokenData.localStorage)) {
                 logger.info(`🔍 Checking localStorage key: ${key}`);
                 
                 if (value && typeof value === 'string') {
                     try {
-                        // Попытка парсинга JSON
+                        // Специальная обработка для truth:auth (основной Bearer токен)
+                        // Специальная обработка для truth:auth (ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ)
+                        if (key === 'truth:auth') {
+                            logger.info(`🎯 Found truth:auth key, parsing...`);
+                            const authData = JSON.parse(value);
+                            
+                            // ПОЛНОЕ логирование содержимого
+                            logger.info(`📋 FULL truth:auth content:`);
+                            logger.info(JSON.stringify(authData, null, 2));
+                            
+                            // Рекурсивно ищем токен во всех вложенных объектах
+                            const findTokenRecursively = (obj, path = '') => {
+                                if (obj && typeof obj === 'object') {
+                                    for (const [subKey, subValue] of Object.entries(obj)) {
+                                        const currentPath = path ? `${path}.${subKey}` : subKey;
+                                        
+                                        logger.info(`🔍 Checking path: truth:auth.${currentPath} = ${typeof subValue === 'string' ? subValue.substring(0, 50) + '...' : typeof subValue}`);
+                                        
+                                        // Проверяем значение на токен
+                                        // Проверяем значение на токен (ИСПРАВЛЕНО)
+                        if (typeof subValue === 'string') {
+                            // Truth Social токены могут НЕ начинаться с 'ey'!
+                            // Приоритет: access_token > другие токены, НЕ client_id
+                            if (subValue.length > 30 && (
+                                subKey === 'access_token' ||  // Высший приоритет
+                                (subKey.toLowerCase().includes('token') && !subKey.toLowerCase().includes('client')) ||
+                                (subKey.toLowerCase().includes('access') && subValue.length === 43)
+                            )) {
+                                logger.info(`✅ Found Bearer token at truth:auth.${currentPath}: ${subValue}`);
+                                return subValue;
+                            }
+                            
+                            // Также проверяем стандартные JWT токены
+                            if (subValue.startsWith('ey') && subValue.length > 100) {
+                                logger.info(`✅ Found JWT Bearer token at truth:auth.${currentPath}`);
+                                return subValue;
+                            }
+                        }
+                                        
+                                        // Если это объект - рекурсивно ищем дальше
+                                        if (subValue && typeof subValue === 'object') {
+                                            const foundToken = findTokenRecursively(subValue, currentPath);
+                                            if (foundToken) return foundToken;
+                                        }
+                                    }
+                                }
+                                return null;
+                            };
+                            
+                            // Быстрые проверки на стандартные поля
+                            if (authData.access_token && authData.access_token.startsWith('ey')) {
+                                token = authData.access_token;
+                                logger.info(`✅ Found Bearer token in truth:auth.access_token`);
+                                break;
+                            }
+                            if (authData.token && authData.token.startsWith('ey')) {
+                                token = authData.token;
+                                logger.info(`✅ Found Bearer token in truth:auth.token`);
+                                break;
+                            }
+                            if (authData.accessToken && authData.accessToken.startsWith('ey')) {
+                                token = authData.accessToken;
+                                logger.info(`✅ Found Bearer token in truth:auth.accessToken`);
+                                break;
+                            }
+                            
+                            // Глубокий поиск если не найден в стандартных местах
+                            const foundToken = findTokenRecursively(authData);
+                            if (foundToken) {
+                                token = foundToken;
+                                break;
+                            }
+                            
+                            logger.info(`🔍 No Bearer tokens found in truth:auth`);
+                        }
+                        // Пропускаем truth:registration-data - это не Bearer токен
+                        if (key === 'truth:registration-data') {
+                            logger.info(`⚠️ Skipping registration token (not Bearer token)`);
+                            continue;
+                        }
+                        
+                        // Попытка парсинга JSON для других ключей
                         if (value.startsWith('{') || value.startsWith('[')) {
                             const parsed = JSON.parse(value);
-                            if (parsed.access_token) {
+                            if (parsed.access_token && parsed.access_token.startsWith('ey')) {
                                 token = parsed.access_token;
-                                logger.info(`✅ Found token in localStorage.${key}.access_token`);
+                                logger.info(`✅ Found Bearer token in localStorage.${key}.access_token`);
+                                break;
+                            }
+                            if (parsed.token && parsed.token.startsWith('ey')) {
+                                token = parsed.token;
+                                logger.info(`✅ Found Bearer token in localStorage.${key}.token`);
                                 break;
                             }
                         }
                         
-                        // Прямой поиск токена
+                        // Прямой поиск токена (начинается с 'ey' и длинный)
                         if (value.startsWith('ey') && value.length > 100) {
                             token = value;
-                            logger.info(`✅ Found direct token in localStorage.${key}`);
+                            logger.info(`✅ Found direct Bearer token in localStorage.${key}`);
                             break;
                         }
+                        
+                        // Поиск Bearer токена в строке
+                        const bearerMatch = value.match(/Bearer\s+([a-zA-Z0-9._-]+)/i);
+                        if (bearerMatch && bearerMatch[1].startsWith('ey') && bearerMatch[1].length > 50) {
+                            token = bearerMatch[1];
+                            logger.info(`✅ Found Bearer token in localStorage.${key}`);
+                            break;
+                        }
+                        
                     } catch (e) {
                         // Игнорируем ошибки парсинга
+                        logger.info(`⚠️ Failed to parse ${key}: ${e.message}`);
                     }
                 }
             }
@@ -289,18 +433,19 @@ class BrowserManager {
             }
 
             if (token) {
-                logger.info(`✅ Token extracted: ${token.substring(0, 20)}...`);
+                logger.info(`🎫 Successfully extracted token: ${token.substring(0, 20)}...`);
                 return { success: true, token: token };
-            } else {
-                logger.warn('⚠️ Token not found. Available keys:');
-                logger.warn(`localStorage: ${Object.keys(tokenData.localStorage).join(', ')}`);
-                logger.warn(`sessionStorage: ${Object.keys(tokenData.sessionStorage).join(', ')}`);
-                
-                return { 
-                    success: false, 
-                    error: 'Token not found. Make sure you are fully logged in to Truth Social.' 
-                };
             }
+
+            // Токен не найден - выводим доступные ключи для отладки
+            logger.warn(`❌ Token not found. Available keys:`);
+            logger.warn(`localStorage: ${Object.keys(tokenData.localStorage).join(', ')}`);
+            logger.warn(`sessionStorage: ${Object.keys(tokenData.sessionStorage).join(', ')}`);
+            
+            return { 
+                success: false, 
+                error: 'Token not found. Make sure you are fully logged in to Truth Social.' 
+            };
 
         } catch (error) {
             logger.error(`❌ Token extraction error: ${error.message}`);
@@ -308,68 +453,10 @@ class BrowserManager {
         }
     }
 
-    // Получение прокси для попытки
-// Получение прокси для попытки
-    async getProxyForAttempt(attempt) {
-        try {
-            // Используем существующий ProxyManager из truth-social-api
-            const proxy = truthSocialAPI.getBestProxy();
-            
-            if (proxy) {
-                logger.info(`📡 Got proxy from TruthSocialAPI: ${proxy.substring(0, 30)}...`);
-                return this.convertProxyFormat(proxy);
-            } else {
-                logger.info(`🔗 No proxy available from TruthSocialAPI, using direct connection`);
-                return null;
-            }
-            
-        } catch (error) {
-            logger.warn(`⚠️ Error getting proxy from TruthSocialAPI: ${error.message}, using direct connection`);
-            return null;
-        }
-    }
-
-    // Преобразование формата прокси
-// Преобразование формата прокси
-    convertProxyFormat(proxy) {
-        try {
-            // Твой формат: http://username:password@ip:port
-            const url = new URL(proxy);
-            const host = url.hostname;
-            const port = url.port;
-            const username = url.username;
-            const password = url.password;
-            
-            // Сохраняем данные авторизации
-            if (username && password) {
-                this.proxyAuth = {
-                    username: username,
-                    password: password
-                };
-                logger.info(`🔐 Proxy auth saved for user: ${username.substring(0, 10)}...`);
-            } else {
-                this.proxyAuth = null;
-            }
-            
-            // Возвращаем простой формат ip:port
-            const simpleProxy = `${host}:${port}`;
-            
-            logger.info(`🔧 Proxy converted: ${proxy.substring(0, 30)}... -> ${simpleProxy}`);
-            return simpleProxy;
-            
-        } catch (error) {
-            logger.error(`❌ Failed to convert proxy format: ${error.message}`);
-            return proxy;
-        }
-    }
-
     // Добавление прокси в белый список
     async addProxyToWhiteList(proxy) {
         try {
-            const ProxyManager = require('./proxy-manager');
-            const proxyManager = new ProxyManager();
-            await proxyManager.init();
-            await proxyManager.addToWhiteList(proxy, 'browser_success');
+            await this.proxyManager.addToWhiteList(proxy, 'browser_success');
             logger.info(`✅ Added working proxy to whitelist`);
         } catch (error) {
             logger.error(`Error adding proxy to whitelist: ${error.message}`);
@@ -379,13 +466,10 @@ class BrowserManager {
     // Добавление прокси в черный список
     async addProxyToBlackList(proxy) {
         try {
-            const ProxyManager = require('./proxy-manager');
-            const proxyManager = new ProxyManager();
-            await proxyManager.init();
-            await proxyManager.addToBlackList(proxy, 'browser_failed');
+            await this.proxyManager.addToBlackList(proxy, 'browser_failed');
             logger.info(`❌ Added failed proxy to blacklist`);
         } catch (error) {
-            logger.error(`Error adding proxy to blacklist: ${error.message}`);
+            logger.error(`Error adding proxy to blacklist: ${error.message}`);    
         }
     }
 

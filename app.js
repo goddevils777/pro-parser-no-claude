@@ -7,8 +7,30 @@ const path = require('path');
 const winston = require('winston');
 const axios = require('axios');
 
+// Подключаем классы
+const TruthSocialAPI = require('./truth-social-api');
+const BrowserManager = require('./browser-manager');
+
+// Инициализация Truth Social API и BrowserManager
 const truthSocialAPI = new TruthSocialAPI();
 const browserManager = new BrowserManager(truthSocialAPI);
+
+
+// Инициализация параллельного мониторинга
+const ParallelMonitor = require('./parallel-monitor');
+let parallelMonitor = null;
+
+// Инициализируем BrowserManager асинхронно
+(async () => {
+    try {
+        await browserManager.init();
+        logger.info('✅ BrowserManager initialized successfully');
+    } catch (error) {
+        logger.error('❌ BrowserManager initialization failed:', error.message);
+    }
+})();
+
+
 
 const app = express();
 const server = http.createServer(app);
@@ -38,9 +60,50 @@ let webLogs = [];
 let recentPosts = [];
 let monitoringIntervals = new Map(); // username -> intervalId
 
-// Инициализация Truth Social API
-const truthSocialAPI = new TruthSocialAPI();
-const browserManager = new BrowserManager();
+
+// Функции для сохранения и загрузки токена
+async function saveAuthToken(token) {
+    try {
+        await fs.ensureDir('./data');
+        await fs.writeJson('./data/auth-token.json', {
+            token: token,
+            savedAt: new Date().toISOString()
+        });
+        logger.info('💾 Auth token saved to file');
+    } catch (error) {
+        logger.error(`Error saving auth token: ${error.message}`);
+    }
+}
+
+async function loadAuthToken() {
+    try {
+        const tokenFile = './data/auth-token.json';
+        if (await fs.pathExists(tokenFile)) {
+            const tokenData = await fs.readJson(tokenFile);
+            if (tokenData.token) {
+                truthSocialAPI.authToken = tokenData.token;
+                truthSocialAPI.isAuthorized = true;
+
+                logger.info(`🎫 Auth token loaded from file: ${tokenData.token.substring(0, 20)}...`);
+                addLogToUI({
+                    level: 'success',
+                    message: `🎫 Auth token loaded from previous session`
+                });
+                return true;
+            }
+        }
+        return false;
+    } catch (error) {
+        logger.error(`Error loading auth token: ${error.message}`);
+        return false;
+    }
+}
+
+// Загружаем токен при старте
+(async () => {
+    await loadAuthToken();
+})();
+
 
 // Logger setup
 const logger = winston.createLogger({
@@ -200,15 +263,16 @@ app.post('/api/auth/token', async (req, res) => {
             return res.json({ success: false, error: 'Token required' });
         }
         
-        if (!token.startsWith('ey')) {
-            return res.json({ success: false, error: 'Invalid token format (should start with "ey")' });
-        }
+if (token.length < 30) {
+    return res.json({ success: false, error: 'Token too short (minimum 30 characters)' });
+}
         
         logger.info(`🎫 Setting Bearer token: ${token.substring(0, 20)}...`);
         
         // Устанавливаем токен
         truthSocialAPI.authToken = token;
         truthSocialAPI.isAuthorized = true;
+        await saveAuthToken(token);
         
         // Тестируем токен
         const testResult = await truthSocialAPI.testConnection();
@@ -258,6 +322,25 @@ app.get('/api/auth/status', (req, res) => {
         stats: truthSocialAPI.getStats()
     });
 });
+
+// API для получения текущего токена
+app.get('/api/auth/current-token', (req, res) => {
+    if (truthSocialAPI.isAuthorized && truthSocialAPI.authToken) {
+        res.json({
+            success: true,
+            token: truthSocialAPI.authToken,
+            hasToken: true
+        });
+    } else {
+        res.json({
+            success: false,
+            token: null,
+            hasToken: false
+        });
+    }
+});
+
+
 app.post('/api/test-truth-social', async (req, res) => {
     try {
         logger.info(`🧪 Testing simple HTTP connection...`);
@@ -636,14 +719,17 @@ function updateStats(newStats) {
     io.emit('stats', parserStats);
 }
 
+
+
+
 // API для запуска браузера авторизации
 // API для запуска браузера авторизации
 app.post('/api/auth/start-browser', async (req, res) => {
     try {
         logger.info('🌐 Starting browser authorization...');
         
-        // Запускаем браузер с автоматической сменой IP (3 попытки)
-        const result = await browserManager.startBrowser(3);
+        // Запускаем браузер с автоматической сменой IP (10 попытки)
+        const result = await browserManager.startBrowser(10);
         
         if (result.success) {
             addLogToUI({
@@ -689,27 +775,53 @@ app.get('/api/auth/browser-status', (req, res) => {
     res.json(status);
 });
 
-// API для извлечения токена из браузера
+
+// API для извлечения токена из браузера (ИСПРАВЛЕНО)
 app.post('/api/auth/extract-token', async (req, res) => {
     try {
+        logger.info('🔍 Extracting token from browser...');
         const result = await browserManager.extractToken();
         
-        if (result.success) {
-            // Автоматически устанавливаем токен в Truth Social API
+        if (result.success && result.token) {
+            // ВАЖНО: Сохраняем токен в TruthSocialAPI
             truthSocialAPI.authToken = result.token;
             truthSocialAPI.isAuthorized = true;
             
+            logger.info(`🎫 Token extracted and saved: ${result.token.substring(0, 20)}...`);
+            
+            // Тестируем токен
+            try {
+                const testResult = await truthSocialAPI.testConnection();
+                if (testResult.success) {
+                    logger.info(`✅ Token verified and working`);
+                } else {
+                    logger.warn(`⚠️ Token saved but verification failed: ${testResult.message}`);
+                }
+            } catch (testError) {
+                logger.warn(`⚠️ Token saved but test failed: ${testError.message}`);
+            }
+            
             addLogToUI({
                 level: 'success',
-                message: `🎫 Token extracted and set successfully: ${result.token.substring(0, 20)}...`
+                message: `🎫 Token extracted and saved successfully: ${result.token.substring(0, 20)}...`
             });
             
             // Автоматически закрываем браузер
-            await browserManager.closeBrowser();
+            try {
+                await browserManager.closeBrowser();
+                addLogToUI({
+                    level: 'info',
+                    message: '🔒 Browser closed automatically'
+                });
+            } catch (closeError) {
+                logger.warn(`Warning closing browser: ${closeError.message}`);
+            }
             
-            addLogToUI({
-                level: 'info',
-                message: '🔒 Browser closed automatically'
+            res.json({ 
+                success: true, 
+                token: result.token,
+                message: 'Token extracted and saved successfully',
+                isAuthorized: true
             });
             
         } else {
@@ -717,9 +829,12 @@ app.post('/api/auth/extract-token', async (req, res) => {
                 level: 'warning',
                 message: `⚠️ Token extraction failed: ${result.error}`
             });
+            
+            res.json({ 
+                success: false, 
+                error: result.error || 'Token extraction failed'
+            });
         }
-        
-        res.json(result);
         
     } catch (error) {
         logger.error('Token extraction error:', error);
@@ -730,6 +845,8 @@ app.post('/api/auth/extract-token', async (req, res) => {
         res.json({ success: false, error: error.message });
     }
 });
+
+
 
 
 // === ЗАПУСК СЕРВЕРА ===
