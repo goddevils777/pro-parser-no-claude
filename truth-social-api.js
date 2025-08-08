@@ -33,6 +33,8 @@ class TruthSocialAPI {
         this.blackList = new Set(); // Заблокированные прокси
         this.currentProxyIndex = 0;
         this.proxyStats = new Map(); // URL -> {success: 0, errors: 0, lastUsed: Date}
+
+         this.lastUsedToken = null; 
         
         // Инициализация
         this.init();
@@ -371,147 +373,181 @@ getNextProxy() {
     }
 
 
-// Получить заголовки для запроса (С ОТЛАДКОЙ)
-    getHeaders(token = null) {
-        // Определяем какой токен использовать
-        const authToken = token || this.authToken;
-        
-        // ОТЛАДОЧНОЕ логирование
-        logger.info(`🔍 Getting headers: token param=${!!token}, this.authToken=${!!this.authToken}, isAuthorized=${this.isAuthorized}`);
-        if (authToken) {
-            logger.info(`🎫 Using Bearer token: ${authToken.substring(0, 20)}...`);
-        } else {
-            logger.warn(`⚠️ No token available for API request!`);
-        }
-        
-        // Улучшенные заголовки для обхода Cloudflare
-        const headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0',
-            'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Windows"'
-        };
 
-        // Добавляем Authorization если есть токен
-        if (authToken) {
-            headers['Authorization'] = `Bearer ${authToken}`;
-            logger.info(`✅ Added Authorization header: Bearer ${authToken.substring(0, 20)}...`);
-        } else {
-            logger.warn(`❌ No Authorization header added - requests will fail!`);
-        }
-
-        // Добавляем Referer для правдоподобности
-        headers['Referer'] = 'https://truthsocial.com/';
-        headers['Origin'] = 'https://truthsocial.com';
-
-        return headers;
+// Получить заголовки для запроса (С РОТАЦИЕЙ ТОКЕНОВ)
+getHeaders(token = null) {
+    // Используем переданный токен или получаем из TokenManager
+    let authToken = token;
+    
+    if (!authToken && global.tokenManager) {
+        authToken = global.tokenManager.getNextToken();
+        logger.info(`🔄 Got token from TokenManager: ${authToken ? authToken.substring(0, 20) + '...' : 'null'}`);
+    } else if (!authToken) {
+        authToken = this.authToken; // fallback на старый токен
+        logger.info(`🔄 Using fallback token: ${authToken ? authToken.substring(0, 20) + '...' : 'null'}`);
+    } else {
+        logger.info(`🔄 Using provided token: ${authToken.substring(0, 20)}...`);
     }
+    
+    // Улучшенные заголовки для обхода Cloudflare
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Cache-Control': 'max-age=0',
+        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'Referer': 'https://truthsocial.com/',
+        'Origin': 'https://truthsocial.com'
+    };
+
+    // Добавляем Authorization если есть токен
+    if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+        logger.info(`✅ Added Authorization header: Bearer ${authToken.substring(0, 20)}...`);
+    } else {
+        logger.warn(`❌ No Authorization header added - requests will fail!`);
+    }
+
+    return headers;
+}
+
+
+// Отслеживание последнего использованного токена
+getLastUsedToken() {
+    return this.lastUsedToken || null;
+}
+
+
 // Выполнить запрос с обходом Cloudflare (МНОЖЕСТВЕННЫЕ ПОПЫТКИ ПРОКСИ)
-    async makeRequest(url, options = {}) {
-        this.requestCount++;
-        const maxProxyRetries = 5; // Пробуем 5 разных прокси
+   
+async makeRequest(url, options = {}) {
+    this.requestCount++;
+    const maxProxyRetries = 5; // Пробуем 5 разных прокси
+    
+    for (let attempt = 1; attempt <= maxProxyRetries; attempt++) {
+        const startTime = Date.now();
         
-        for (let attempt = 1; attempt <= maxProxyRetries; attempt++) {
-            const startTime = Date.now();
+        try {
+            const proxy = this.getBestProxy(); // Получаем лучший доступный прокси
+            const proxyAgent = this.createProxyAgent(proxy);
             
+            const requestOptions = {
+                url: url,
+                headers: this.getHeaders(options.token),
+                timeout: 15000,
+                followRedirect: true,
+                maxRedirects: 5,
+                json: false,
+                ...options
+            };
+
+            // Добавляем прокси если есть
+            if (proxyAgent) {
+                requestOptions.agent = proxyAgent;
+            }
+
+            logger.info(`📡 Making request to: ${url} ${proxy ? `via ${proxy.split('@')[0]}@***` : '(direct)'} (attempt ${attempt}/${maxProxyRetries})`);
+            
+            // Используем cloudscraper для обхода Cloudflare
+            const response = await cloudscraper(requestOptions);
+            
+            const responseTime = Date.now() - startTime;
+            this.successCount++;
+            
+            logger.info(`✅ Request successful (${responseTime}ms): ${url}`);
+            
+            // Добавляем прокси в белый список если он работает
+            if (proxy) {
+                await this.addToWhiteList(proxy, 'api_success');
+            }
+            
+            // Определяем тип ответа
+            let data;
             try {
-                const proxy = this.getBestProxy(); // Получаем лучший доступный прокси
-                const proxyAgent = this.createProxyAgent(proxy);
-                
-                const requestOptions = {
-                    url: url,
-                    headers: this.getHeaders(options.token),
-                    timeout: 15000,
-                    followRedirect: true,
-                    maxRedirects: 5,
-                    json: false,
-                    ...options
-                };
-
-                // Добавляем прокси если есть
-                if (proxyAgent) {
-                    requestOptions.agent = proxyAgent;
-                }
-
-                logger.info(`📡 Making request to: ${url} ${proxy ? `via ${proxy.split('@')[0]}@***` : '(direct)'} (attempt ${attempt}/${maxProxyRetries})`);
-                
-                // Используем cloudscraper для обхода Cloudflare
-                const response = await cloudscraper(requestOptions);
-                
-                const responseTime = Date.now() - startTime;
-                this.successCount++;
-                
-                logger.info(`✅ Request successful (${responseTime}ms): ${url}`);
-                
-                // Добавляем прокси в белый список если он работает
-                if (proxy) {
-                    await this.addToWhiteList(proxy, 'api_success');
-                }
-                
-                // Определяем тип ответа
-                let data;
-                try {
-                    data = typeof response === 'string' ? JSON.parse(response) : response;
-                } catch (e) {
-                    data = response;
-                }
-                
-                return {
-                    success: true,
-                    data: data,
-                    responseTime: responseTime,
-                    proxy: proxy,
-                    isHTML: typeof data === 'string' && data.includes('<html')
-                };
-                
+                data = typeof response === 'string' ? JSON.parse(response) : response;
+            } catch (e) {
+                data = response;
+            }
+            
+            return {
+                success: true,
+                data: data,
+                responseTime: responseTime,
+                proxy: proxy,
+                isHTML: typeof data === 'string' && data.includes('<html')
+            };
+            
             } catch (error) {
                 const responseTime = Date.now() - startTime;
+                const currentProxy = this.getBestProxy();
                 
                 logger.error(`❌ Request failed (${responseTime}ms) attempt ${attempt}/${maxProxyRetries}: ${error.message}`);
                 
-                // Добавляем прокси в черный список если он заблокирован
-                const currentProxy = this.getBestProxy();
-                if (currentProxy && (error.message.includes('403') || error.message.includes('cloudflare') || error.message.includes('blocked'))) {
-                    await this.addToBlackList(currentProxy, 'api_blocked');
-                    logger.warn(`❌ Added blocked proxy to blacklist: ${currentProxy.split('@')[0]}@***`);
-                }
+                // ОБРАБОТКА ОШИБОК ТОКЕНОВ
+                const isTokenError = error.message.includes('429') || error.message.includes('Too many requests');
+                const isUnauthorized = error.message.includes('401') || error.message.includes('403');
                 
-                // Если это последняя попытка - возвращаем ошибку
-                if (attempt === maxProxyRetries) {
-                    this.errorCount++;
+                // Помечаем токен при ошибках авторизации
+                if (global.tokenManager && (isTokenError || isUnauthorized)) {
+                    const errorType = isTokenError ? 'rate_limit' : 'unauthorized';
                     
-                    // Если это ошибка Cloudflare, пробуем другой подход
-                    if (error.message.includes('cloudflare') || error.message.includes('403') || error.message.includes('captcha')) {
-                        logger.warn('🛡️ All proxies blocked by Cloudflare, trying fallback method...');
-                        return await this.makeRequestFallback(url, options);
+                    // Получаем токен который использовался в этом запросе
+                    const usedToken = this.getLastUsedToken(); // нужно добавить этот метод
+                    if (usedToken) {
+                        global.tokenManager.markTokenError(usedToken, errorType);
                     }
-                    
-                    return {
-                        success: false,
-                        error: error.message,
-                        responseTime: responseTime
-                    };
                 }
                 
-                // Пауза перед следующей попыткой
-                await new Promise(resolve => setTimeout(resolve, 1000));
+                // УМНАЯ логика блокировки прокси
+                const isTemporaryError = error.message.includes('ETIMEDOUT') || 
+                                    error.message.includes('EPROTO') || 
+                                    error.message.includes('SSL') ||
+                                    error.message.includes('certificate') ||
+                                    error.message.includes('ECONNRESET');
+                const isRealBlock = error.message.includes('403') && !error.message.includes('Too many requests');
                 
-                logger.info(`🔄 Trying next proxy (${attempt + 1}/${maxProxyRetries})...`);
+                if (currentProxy && isRealBlock) {
+                    // Только реальные блокировки (403 без 429)
+                    await this.addToBlackList(currentProxy, 'api_blocked');
+                    logger.warn(`🚫 Added to blacklist (real block): ${currentProxy.split('@')[0]}@***`);
+                } else if (currentProxy && (isTokenError || isTemporaryError)) {
+                    logger.warn(`⚠️ Temporary/token error, NOT blacklisting: ${currentProxy.split('@')[0]}@*** (${isTokenError ? 'token limit' : 'network issue'})`);
+                }
+            
+            // Если это последняя попытка - возвращаем ошибку
+            if (attempt === maxProxyRetries) {
+                this.errorCount++;
+                
+                // Если это ошибка Cloudflare, пробуем другой подход
+                if (error.message.includes('cloudflare') || (error.message.includes('403') && !isTokenError)) {
+                    logger.warn('🛡️ All proxies blocked by Cloudflare, trying fallback method...');
+                    return await this.makeRequestFallback(url, options);
+                }
+                
+                return {
+                    success: false,
+                    error: error.message,
+                    responseTime: responseTime
+                };
             }
+            
+            // Пауза перед следующей попыткой
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            logger.info(`🔄 Trying next proxy (${attempt + 1}/${maxProxyRetries})...`);
         }
     }
-
+}
     // Альтернативный метод запроса
     async makeRequestFallback(url, options = {}) {
         try {
@@ -708,6 +744,81 @@ getNextProxy() {
             return await this.getUserPostsHTML(username, limit);
         }
     }
+
+    // Получение постов с использованием стабильного соединения
+async getUserPostsWithConnection(username, limit = 20, connection) {
+    try {
+        logger.info(`📄 Getting posts for @${username} via stable connection (limit: ${limit})`);
+        
+        // Получаем ID пользователя
+        const userLookupUrl = `${this.apiURL}/accounts/lookup?acct=${username}`;
+        
+        const lookupResponse = await this.makeRequestWithConnection(userLookupUrl, connection);
+        
+        if (!lookupResponse.success) {
+            return { success: false, error: `User lookup failed: ${lookupResponse.error}`, method: 'stable_connection' };
+        }
+
+        const userId = lookupResponse.data.id;
+        logger.info(`👤 Found account ID: ${userId}`);
+
+        // Получаем посты пользователя
+        const postsUrl = `${this.apiURL}/accounts/${userId}/statuses?limit=${limit}&exclude_replies=true`;
+        
+        const postsResponse = await this.makeRequestWithConnection(postsUrl, connection);
+        
+        if (!postsResponse.success) {
+            return { success: false, error: `Posts request failed: ${postsResponse.error}`, method: 'stable_connection' };
+        }
+
+        // Форматируем посты
+        const formattedPosts = this.formatPosts(postsResponse.data);
+        
+        return {
+            success: true,
+            posts: formattedPosts,
+            method: 'stable_connection',
+            proxy: connection.proxy.split('@')[0] + '@***'
+        };
+
+    } catch (error) {
+        logger.error(`❌ Error getting posts for @${username}:`, error.message);
+        return { success: false, error: error.message, method: 'stable_connection' };
+    }
+}
+
+// Выполнение запроса с использованием стабильного соединения
+async makeRequestWithConnection(url, connection, options = {}) {
+    try {
+        const requestOptions = {
+            url: url,
+            timeout: options.timeout || 10000,
+            headers: this.getHeaders(),
+            agent: connection.agent,
+            ...options
+        };
+
+        logger.info(`📡 Using stable connection: ${connection.proxy.split('@')[0]}@***`);
+        
+        const response = await cloudscraper(requestOptions);
+        
+        // Обновляем статистику соединения
+        connection.lastUsed = Date.now();
+        
+        let data;
+        try {
+            data = typeof response === 'string' ? JSON.parse(response) : response;
+        } catch (parseError) {
+            data = response;
+        }
+
+        return { success: true, data: data };
+        
+    } catch (error) {
+        logger.error(`❌ Stable connection request failed: ${error.message}`);
+        return { success: false, error: error.message };
+    }
+}
 
     // Получить ID пользователя (ИСПРАВЛЕНО)
     async getUserId(username) {

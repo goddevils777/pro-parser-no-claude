@@ -18,7 +18,111 @@ const browserManager = new BrowserManager(truthSocialAPI);
 
 // Инициализация параллельного мониторинга
 const ParallelMonitor = require('./parallel-monitor');
+const StableConnectionPool = require('./stable-connection-pool');
 let parallelMonitor = null;
+
+// Инициализируем пул соединений
+connectionPool = new StableConnectionPool(truthSocialAPI);
+
+// Инициализируем параллельный мониторинг с callback
+// Инициализируем параллельный мониторинг с callback и пулом соединений
+parallelMonitor = new ParallelMonitor(truthSocialAPI, (postData) => {
+    handleNewPost(postData);
+}, connectionPool);
+
+
+
+// Трекер времени между выдачами
+let lastOutputTime = 0;
+
+function getTimeSinceLastOutput() {
+    const now = Date.now();
+    const interval = lastOutputTime ? now - lastOutputTime : 0;
+    lastOutputTime = now;
+    return interval;
+}
+// Функция обработки всех результатов от потоков
+function handleNewPost(postData) {
+    const responseTime = postData.responseTime;
+    const streamId = postData.streamId;
+    const profile = postData.profile;
+    const timeSinceLastOutput = getTimeSinceLastOutput();
+    
+    console.log(`🔧 DEBUG: Gap time: ${timeSinceLastOutput}ms`); // ← отладочный лог
+    
+    // Отправляем Gap статистику в веб
+    io.emit('gapUpdate', { gapTime: timeSinceLastOutput });
+    
+    if (postData.type === 'new_post') {
+        // Новый пост найден
+        parserStats.postsFound++;
+        
+        const postEntry = {
+            username: profile,
+            content: postData.post.content,
+            createdAt: postData.post.createdAt,
+            foundAt: postData.foundAt,
+            streamId: streamId,
+            postId: postData.post.id,
+            responseTime: responseTime
+        };
+        
+        recentPosts.unshift(postEntry);
+        
+        if (recentPosts.length > 100) {
+            recentPosts = recentPosts.slice(0, 100);
+        }
+        
+        // Отправляем новый пост
+        io.emit('post', {
+            author: profile,
+            content: postData.post.content,
+            foundAt: postData.foundAt,
+            streamId: streamId,
+            responseTime: responseTime,
+            source: `🎯 NEW POST - Stream #${streamId} (${responseTime}ms) | Gap: ${timeSinceLastOutput}ms`
+        });
+        
+        addLogToUI({
+            level: 'success',
+            message: `🎯 NEW POST @${profile} (Stream #${streamId}, ${responseTime}ms) | Gap: ${timeSinceLastOutput}ms`
+        });
+        
+    } else if (postData.type === 'check_result') {
+        // Обычная проверка - показываем последний пост с пометкой
+        io.emit('post', {
+            author: profile,
+            content: postData.post.content,
+            foundAt: postData.foundAt,
+            streamId: streamId,
+            responseTime: responseTime,
+            source: `✅ Last post - Stream #${streamId} (${responseTime}ms) | Gap: ${timeSinceLastOutput}ms`
+        });
+        
+        addLogToUI({
+            level: 'info',
+            message: `✅ Stream #${streamId}: @${profile} checked (${responseTime}ms) | Gap: ${timeSinceLastOutput}ms`
+        });
+        
+    } else if (postData.type === 'error') {
+        // Ошибка при проверке
+        io.emit('post', {
+            author: profile,
+            content: `❌ Error: ${postData.error}`,
+            foundAt: postData.foundAt,
+            streamId: streamId,
+            responseTime: responseTime,
+            source: `❌ Error - Stream #${streamId} (${responseTime}ms) | Gap: ${timeSinceLastOutput}ms`
+        });
+        
+        addLogToUI({
+            level: 'error',
+            message: `❌ Stream #${streamId}: @${profile} error (${responseTime}ms) | Gap: ${timeSinceLastOutput}ms`
+        });
+    }
+    
+    parserStats.lastActivity = new Date().toISOString();
+}
 
 // Инициализируем BrowserManager асинхронно
 (async () => {
@@ -40,6 +144,9 @@ const io = socketIo(server, {
         methods: ["GET", "POST"]
     }
 });
+
+// Делаем io доступным глобально для других модулей
+global.io = io;
 
 // Middleware
 app.use(express.json());
@@ -119,6 +226,27 @@ const logger = winston.createLogger({
         new winston.transports.File({ filename: './logs/combined.log' })
     ]
 });
+
+
+
+
+// Инициализация TokenManager (УБРАТЬ ОТСЮДА)
+const TokenManager = require('./token-manager');
+let tokenManager = null;
+
+// Инициализируем TokenManager (УБРАТЬ ОТСЮДА)
+(async () => {
+    try {
+        logger.info('🎫 Initializing TokenManager...');
+        tokenManager = new TokenManager();
+        await tokenManager.init();
+        global.tokenManager = tokenManager;
+        logger.info(`✅ TokenManager initialized successfully with ${tokenManager.tokens.length} tokens`);
+    } catch (error) {
+        logger.error('❌ TokenManager initialization failed:', error.message);
+        logger.error('Stack trace:', error.stack);
+    }
+})();
 
 // === API ENDPOINTS ===
 
@@ -423,6 +551,7 @@ app.post('/api/test-truth-social', async (req, res) => {
 });
 
 // API для запуска мониторинга
+// API для запуска параллельного мониторинга
 app.post('/api/monitoring/start', async (req, res) => {
     try {
         const profilesPath = './data/profiles.json';
@@ -437,81 +566,91 @@ app.post('/api/monitoring/start', async (req, res) => {
             return res.json({ success: false, error: 'No profiles to monitor' });
         }
         
-        // Останавливаем существующие интервалы
+        // Останавливаем старые интервалы если есть
         for (const [username, intervalId] of monitoringIntervals) {
             clearInterval(intervalId);
         }
         monitoringIntervals.clear();
         
-        // Закрываем браузер если открыт
-        if (browserManager && browserManager.isRunning) {
-            logger.info('🔒 Closing browser...');
-            await browserManager.closeBrowser();
+        // Запускаем параллельный мониторинг
+        const result = await parallelMonitor.startParallelMonitoring(profiles);
+        
+        if (result.success) {
+            parserStats.running = true;
+            parserStats.profilesCount = profiles.length;
+            parserStats.lastActivity = new Date().toISOString();
+            
+            logger.info(`🚀 Started parallel monitoring: ${result.streamCount} streams`);
+            addLogToUI({
+                level: 'info',
+                message: `🚀 Started ${result.streamCount} parallel streams for ${profiles.length} profiles`
+            });
+            
+            updateStats({ running: true, profilesCount: profiles.length });
+            // Отправляем начальную статистику профилей
+io.emit('profilesCount', profiles.length);
         }
         
-        // Запускаем РЕАЛЬНЫЙ мониторинг профилей
-        const intervalId = setInterval(async () => {
-            await monitorAllProfiles(profiles);
-        }, 30000); // каждые 30 секунд
-        
-        monitoringIntervals.set('main', intervalId);
-        
-        // Первый запуск сразу
-        await monitorAllProfiles(profiles);
-        
-        parserStats.running = true;
-        parserStats.profilesCount = profiles.length;
-        parserStats.lastActivity = new Date().toISOString();
-        
-        logger.info(`🚀 Started REAL API monitoring for ${profiles.length} profiles`);
-        addLogToUI({
-            level: 'info',
-            message: `🚀 Started monitoring ${profiles.length} profiles: ${profiles.map(p => '@' + p.username).join(', ')}`
-        });
-        
-        updateStats({ running: true, profilesCount: profiles.length });
-        
-        res.json({ 
-            success: true, 
-            message: `Monitoring started for ${profiles.length} profiles`,
-            profiles: profiles.map(p => p.username)
-        });
+        res.json(result);
         
     } catch (error) {
-        logger.error('Error starting monitoring:', error);
+        logger.error('Error starting parallel monitoring:', error);
         res.json({ success: false, error: error.message });
     }
 });
 
-// Функция мониторинга всех профилей
-async function monitorAllProfiles(profiles) {
-    addLogToUI({ 
-        level: 'info', 
-        message: `🔄 Checking ${profiles.length} profiles for latest posts...` 
-    });
-    
-    for (const profile of profiles) {
-        try {
-            const success = await monitorProfileWithRetry(profile);
-            
-            if (!success) {
-                addLogToUI({
-                    level: 'warning',
-                    message: `⚠️ Failed to check @${profile.username} - trying next IP`
-                });
-            }
-            
-            // Задержка между профилями 
-            await new Promise(resolve => setTimeout(resolve, 3000));
-            
-        } catch (error) {
-            addLogToUI({ 
-                level: 'error', 
-                message: `❌ Error checking @${profile.username}: ${error.message}` 
+// API для остановки параллельного мониторинга
+app.post('/api/monitoring/stop', async (req, res) => {
+    try {
+        // Останавливаем параллельный мониторинг
+        const result = parallelMonitor.stopParallelMonitoring();
+        
+        // Останавливаем старые интервалы если есть
+        for (const [username, intervalId] of monitoringIntervals) {
+            clearInterval(intervalId);
+        }
+        monitoringIntervals.clear();
+        
+        parserStats.running = false;
+        parserStats.lastActivity = new Date().toISOString();
+        
+        if (result.success) {
+            logger.info(`🛑 Stopped parallel monitoring: ${result.stoppedStreams} streams`);
+            addLogToUI({
+                level: 'info',
+                message: `🛑 Stopped ${result.stoppedStreams} parallel streams`
             });
         }
+        
+        updateStats({ running: false });
+        
+        res.json(result);
+        
+    } catch (error) {
+        logger.error('Error stopping parallel monitoring:', error);
+        res.json({ success: false, error: error.message });
     }
-}
+});
+
+// API для получения статистики параллельного мониторинга
+app.get('/api/monitoring/stats', (req, res) => {
+    try {
+        const parallelStats = parallelMonitor.getStats();
+        
+        res.json({
+            success: true,
+            stats: {
+                ...parserStats,
+                parallel: parallelStats
+            }
+        });
+        
+    } catch (error) {
+        logger.error('Error getting monitoring stats:', error);
+        res.json({ success: false, error: error.message });
+    }
+});
+
 
 // Мониторинг профиля с повторами и сменой IP
 async function monitorProfileWithRetry(profile, maxRetries = 3) {
@@ -846,6 +985,95 @@ app.post('/api/auth/extract-token', async (req, res) => {
     }
 });
 
+
+// API для получения списка токенов
+app.get('/api/tokens', (req, res) => {
+    try {
+        if (global.tokenManager) {
+            const stats = global.tokenManager.getStats();
+            res.json({
+                success: true,
+                data: stats
+            });
+        } else {
+            res.json({
+                success: false,
+                error: 'TokenManager not initialized'
+            });
+        }
+    } catch (error) {
+        res.json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// API для добавления нового токена (С ОТЛАДКОЙ)
+app.post('/api/tokens/add', async (req, res) => {
+    try {
+        const { token } = req.body;
+        
+        logger.info(`🎫 API /api/tokens/add called with token: ${token ? token.substring(0, 20) + '...' : 'null'}`);
+        
+        if (!token || token.length < 10) {
+            logger.warn(`❌ Invalid token format: ${token}`);
+            return res.json({
+                success: false,
+                error: 'Invalid token format'
+            });
+        }
+        
+        if (global.tokenManager) {
+            logger.info(`✅ TokenManager found, adding token...`);
+            const added = await global.tokenManager.addToken(token);
+            
+            logger.info(`🎫 Token add result: ${added}`);
+            
+            res.json({
+                success: added,
+                message: added ? 'Token added successfully' : 'Token already exists'
+            });
+        } else {
+            logger.error(`❌ TokenManager not initialized`);
+            res.json({
+                success: false,
+                error: 'TokenManager not initialized'
+            });
+        }
+    } catch (error) {
+        logger.error(`❌ Error in /api/tokens/add: ${error.message}`);
+        res.json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// API для удаления токена
+app.delete('/api/tokens/:index', async (req, res) => {
+    try {
+        const index = parseInt(req.params.index);
+        
+        if (global.tokenManager) {
+            const removed = await global.tokenManager.removeToken(index);
+            res.json({
+                success: removed,
+                message: removed ? 'Token removed successfully' : 'Failed to remove token'
+            });
+        } else {
+            res.json({
+                success: false,
+                error: 'TokenManager not initialized'
+            });
+        }
+    } catch (error) {
+        res.json({
+            success: false,
+            error: error.message
+        });
+    }
+});
 
 
 

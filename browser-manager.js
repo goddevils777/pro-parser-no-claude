@@ -280,129 +280,114 @@ class BrowserManager {
             let token = null;
 
             // Поиск в localStorage
-            // Поиск в localStorage (ИСПРАВЛЕНО)
-            for (const [key, value] of Object.entries(tokenData.localStorage)) {
-                logger.info(`🔍 Checking localStorage key: ${key}`);
+            // Поиск в localStorage (УЛУЧШЕННАЯ ВЕРСИЯ)
+for (const [key, value] of Object.entries(tokenData.localStorage)) {
+    logger.info(`🔍 Checking localStorage key: ${key}`);
+    
+   if (value && typeof value === 'string') {
+    try {
+        // Специальная обработка для truth:auth
+        if (key === 'truth:auth') {
+            logger.info(`🎯 Found truth:auth key, parsing...`);
+            logger.info(`📋 RAW truth:auth value: ${value}`);
+            
+            try {
+                const authData = JSON.parse(value);
                 
-                if (value && typeof value === 'string') {
-                    try {
-                        // Специальная обработка для truth:auth (основной Bearer токен)
-                        // Специальная обработка для truth:auth (ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ)
-                        if (key === 'truth:auth') {
-                            logger.info(`🎯 Found truth:auth key, parsing...`);
-                            const authData = JSON.parse(value);
-                            
-                            // ПОЛНОЕ логирование содержимого
-                            logger.info(`📋 FULL truth:auth content:`);
-                            logger.info(JSON.stringify(authData, null, 2));
-                            
-                            // Рекурсивно ищем токен во всех вложенных объектах
-                            const findTokenRecursively = (obj, path = '') => {
-                                if (obj && typeof obj === 'object') {
-                                    for (const [subKey, subValue] of Object.entries(obj)) {
-                                        const currentPath = path ? `${path}.${subKey}` : subKey;
-                                        
-                                        logger.info(`🔍 Checking path: truth:auth.${currentPath} = ${typeof subValue === 'string' ? subValue.substring(0, 50) + '...' : typeof subValue}`);
-                                        
-                                        // Проверяем значение на токен
-                                        // Проверяем значение на токен (ИСПРАВЛЕНО)
-                        if (typeof subValue === 'string') {
-                            // Truth Social токены могут НЕ начинаться с 'ey'!
-                            // Приоритет: access_token > другие токены, НЕ client_id
-                            if (subValue.length > 30 && (
-                                subKey === 'access_token' ||  // Высший приоритет
-                                (subKey.toLowerCase().includes('token') && !subKey.toLowerCase().includes('client')) ||
-                                (subKey.toLowerCase().includes('access') && subValue.length === 43)
-                            )) {
-                                logger.info(`✅ Found Bearer token at truth:auth.${currentPath}: ${subValue}`);
-                                return subValue;
-                            }
-                            
-                            // Также проверяем стандартные JWT токены
-                            if (subValue.startsWith('ey') && subValue.length > 100) {
-                                logger.info(`✅ Found JWT Bearer token at truth:auth.${currentPath}`);
-                                return subValue;
-                            }
-                        }
-                                        
-                                        // Если это объект - рекурсивно ищем дальше
-                                        if (subValue && typeof subValue === 'object') {
-                                            const foundToken = findTokenRecursively(subValue, currentPath);
-                                            if (foundToken) return foundToken;
-                                        }
-                                    }
+                // ПОЛНОЕ логирование содержимого
+                logger.info(`📋 FULL truth:auth content:`);
+                logger.info(JSON.stringify(authData, null, 2));
+
+                // ИЩЕМ ВСЕ ТОКЕНОПОДОБНЫЕ ЗНАЧЕНИЯ
+                logger.info(`🔍 ALL TOKEN-LIKE VALUES IN truth:auth:`);
+                const findAllTokens = (obj, path = '') => {
+                    if (obj && typeof obj === 'object') {
+                        for (const [subKey, subValue] of Object.entries(obj)) {
+                            const currentPath = path ? `${path}.${subKey}` : subKey;
+                            if (typeof subValue === 'string' && subValue.length > 20) {
+                                logger.info(`📋 TOKEN CANDIDATE: ${currentPath} = "${subValue}" (length: ${subValue.length})`);
+                                
+                                // ПРИОРИТЕТ 1: Проверяем твой специфический токен
+                                if (subValue.startsWith('9KlLCpjKrUi82-Xf9Iwo')) {
+                                    logger.info(`🎯 FOUND YOUR SPECIFIC TOKEN: ${currentPath} = ${subValue}`);
+                                    return subValue;
                                 }
-                                return null;
-                            };
-                            
-                            // Быстрые проверки на стандартные поля
-                            if (authData.access_token && authData.access_token.startsWith('ey')) {
-                                token = authData.access_token;
-                                logger.info(`✅ Found Bearer token in truth:auth.access_token`);
-                                break;
-                            }
-                            if (authData.token && authData.token.startsWith('ey')) {
-                                token = authData.token;
-                                logger.info(`✅ Found Bearer token in truth:auth.token`);
-                                break;
-                            }
-                            if (authData.accessToken && authData.accessToken.startsWith('ey')) {
-                                token = authData.accessToken;
-                                logger.info(`✅ Found Bearer token in truth:auth.accessToken`);
-                                break;
-                            }
-                            
-                            // Глубокий поиск если не найден в стандартных местах
-                            const foundToken = findTokenRecursively(authData);
-                            if (foundToken) {
-                                token = foundToken;
-                                break;
-                            }
-                            
-                            logger.info(`🔍 No Bearer tokens found in truth:auth`);
-                        }
-                        // Пропускаем truth:registration-data - это не Bearer токен
-                        if (key === 'truth:registration-data') {
-                            logger.info(`⚠️ Skipping registration token (not Bearer token)`);
-                            continue;
-                        }
-                        
-                        // Попытка парсинга JSON для других ключей
-                        if (value.startsWith('{') || value.startsWith('[')) {
-                            const parsed = JSON.parse(value);
-                            if (parsed.access_token && parsed.access_token.startsWith('ey')) {
-                                token = parsed.access_token;
-                                logger.info(`✅ Found Bearer token in localStorage.${key}.access_token`);
-                                break;
-                            }
-                            if (parsed.token && parsed.token.startsWith('ey')) {
-                                token = parsed.token;
-                                logger.info(`✅ Found Bearer token in localStorage.${key}.token`);
-                                break;
+                            } else if (typeof subValue === 'object') {
+                                const foundToken = findAllTokens(subValue, currentPath);
+                                if (foundToken) return foundToken;
                             }
                         }
-                        
-                        // Прямой поиск токена (начинается с 'ey' и длинный)
-                        if (value.startsWith('ey') && value.length > 100) {
-                            token = value;
-                            logger.info(`✅ Found direct Bearer token in localStorage.${key}`);
-                            break;
-                        }
-                        
-                        // Поиск Bearer токена в строке
-                        const bearerMatch = value.match(/Bearer\s+([a-zA-Z0-9._-]+)/i);
-                        if (bearerMatch && bearerMatch[1].startsWith('ey') && bearerMatch[1].length > 50) {
-                            token = bearerMatch[1];
-                            logger.info(`✅ Found Bearer token in localStorage.${key}`);
-                            break;
-                        }
-                        
-                    } catch (e) {
-                        // Игнорируем ошибки парсинга
-                        logger.info(`⚠️ Failed to parse ${key}: ${e.message}`);
                     }
+                    return null;
+                };
+
+                // Сначала ищем твой специфический токен
+                const yourToken = findAllTokens(authData);
+                if (yourToken) {
+                    token = yourToken;
+                    logger.info(`✅ Successfully found your specific token!`);
+                    break;
                 }
+
+                // Если твой токен не найден - стандартная логика
+                logger.info(`⚠️ Your specific token not found, trying standard logic...`);
+                
+                // Быстрые проверки на стандартные поля
+                if (authData.access_token && authData.access_token.length > 30 && /^[a-zA-Z0-9._-]+$/.test(authData.access_token)) {
+                    token = authData.access_token;
+                    logger.info(`✅ Found Bearer token in truth:auth.access_token`);
+                    break;
+                }
+                if (authData.token && authData.token.length > 30 && /^[a-zA-Z0-9._-]+$/.test(authData.token)) {
+                    token = authData.token;
+                    logger.info(`✅ Found Bearer token in truth:auth.token`);
+                    break;
+                }
+                if (authData.accessToken && authData.accessToken.length > 30 && /^[a-zA-Z0-9._-]+$/.test(authData.accessToken)) {
+                    token = authData.accessToken;
+                    logger.info(`✅ Found Bearer token in truth:auth.accessToken`);
+                    break;
+                }
+                
+            } catch (parseError) {
+                logger.error(`❌ Failed to parse truth:auth: ${parseError.message}`);
+                logger.info(`📋 Raw value that failed: ${value.substring(0, 200)}...`);
             }
+        }
+        
+        // Пропускаем registration data
+        if (key === 'truth:registration-data') {
+            logger.info(`⚠️ Skipping registration token (not Bearer token)`);
+            continue;
+        }
+        
+        // Попытка парсинга JSON для других ключей
+        if (value.startsWith('{') || value.startsWith('[')) {
+            const parsed = JSON.parse(value);
+            if (parsed.access_token && parsed.access_token.length > 30 && /^[a-zA-Z0-9._-]+$/.test(parsed.access_token)) {
+                token = parsed.access_token;
+                logger.info(`✅ Found Bearer token in localStorage.${key}.access_token`);
+                break;
+            }
+            if (parsed.token && parsed.token.length > 30 && /^[a-zA-Z0-9._-]+$/.test(parsed.token)) {
+                token = parsed.token;
+                logger.info(`✅ Found Bearer token in localStorage.${key}.token`);
+                break;
+            }
+        }
+        
+        // Прямой поиск токена
+        if (value.length > 30 && /^[a-zA-Z0-9._-]+$/.test(value)) {
+            token = value;
+            logger.info(`✅ Found direct Bearer token in localStorage.${key}`);
+            break;
+        }
+        
+    } catch (e) {
+        logger.info(`⚠️ Failed to parse ${key}: ${e.message}`);
+    }
+}
+}
 
             // Поиск в sessionStorage если не найден в localStorage
             if (!token) {

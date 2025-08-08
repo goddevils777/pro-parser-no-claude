@@ -651,3 +651,51 @@ h1 {
     padding: 5px 12px;
     font-size: 0.85em;
 }
+
+.tokens-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 10px 0;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.token-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background-color: #f8f9fa;
+    border-radius: 4px;
+    border: 1px solid #dee2e6;
+}
+
+.token-text {
+    font-family: 'Courier New', monospace;
+    font-size: 0.85em;
+    flex: 1;
+    color: #495057;
+}
+
+.token-stats {
+    font-size: 0.75em;
+    color: #6c757d;
+}
+
+.token-status {
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 0.7em;
+    font-weight: bold;
+}
+
+.token-status.available {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.token-status.cooldown {
+    background-color: #fff3cd;
+    color: #856404;
+}

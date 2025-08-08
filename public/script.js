@@ -70,6 +70,14 @@ socket.on('posts-cleared', () => {
     recentPosts.innerHTML = '';
 });
 
+socket.on('gapUpdate', (data) => {
+    updateGapStats(data.gapTime);
+});
+
+socket.on('profilesCount', (count) => {
+    updateProfilesCount(count);
+});
+
 // === EVENT LISTENERS ===
 
 if (openBrowserBtn) {
@@ -109,8 +117,7 @@ if (authTokenBtn) {
 }
 
 // === ФУНКЦИИ АВТОРИЗАЦИИ ===
-
-// Установка Bearer токена
+// Добавление токена в пул (вместо setAuthToken)
 async function setAuthToken() {
     const token = authTokenInput.value.trim();
     
@@ -119,108 +126,94 @@ async function setAuthToken() {
         return;
     }
     
-    if (token.length < 30) {
-        alert('Token too short. Please enter a valid Bearer token (minimum 30 characters)');
-        return;
-    }
     
     authTokenBtn.disabled = true;
-    authTokenBtn.textContent = 'Setting token...';
+    authTokenBtn.textContent = 'Adding to pool...';
     
     try {
         addLogToUI({ 
             level: 'info', 
-            message: `🎫 Setting Bearer token...` 
+            message: `🎫 Adding token to pool: ${token.substring(0, 20)}...` 
         });
         
-        const response = await fetch('/api/auth/token', {
+        // Добавляем токен в пул через новый API
+        const response = await fetch('/api/tokens/add', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ token })
+            body: JSON.stringify({ token: token })
         });
         
         const result = await response.json();
         
         if (result.success) {
-            authStatusText.textContent = 'Authorized';
+            // Обновляем статус авторизации
+            authStatusText.textContent = 'Token Pool Ready';
             authStatusText.className = 'status running';
-                        // Обновляем отображение токена
-            updateTokenDisplay(result.token);
-            authTokenBtn.textContent = '✅ Token Set';
-            authTokenBtn.className = 'btn btn-success';
             
+            authTokenBtn.textContent = '✅ Added to Pool';
+            authTokenBtn.className = 'btn btn-success';
             
             // Очищаем поле токена
             authTokenInput.value = '';
             
             addLogToUI({ 
                 level: 'success', 
-                message: `✅ Bearer token set successfully` 
+                message: `✅ Token added to pool successfully` 
             });
             
-            if (result.warning) {
-                addLogToUI({ 
-                    level: 'warning', 
-                    message: `⚠️ ${result.warning}` 
-                });
-            }
+            // Обновляем список токенов
+            updateTokensList();
             
         } else {
-            authStatusText.textContent = 'Token Invalid';
+            authStatusText.textContent = 'Add Failed';
             authStatusText.className = 'status stopped';
-            authTokenBtn.textContent = '❌ Invalid Token';
-            authTokenBtn.className = 'btn btn-danger';
+            authTokenBtn.textContent = result.message.includes('exists') ? '⚠️ Already Exists' : '❌ Failed';
+            authTokenBtn.className = result.message.includes('exists') ? 'btn btn-warning' : 'btn btn-danger';
             
             addLogToUI({ 
-                level: 'error', 
-                message: `❌ Token setup failed: ${result.error}` 
+                level: result.message.includes('exists') ? 'warning' : 'error', 
+                message: `${result.message.includes('exists') ? '⚠️' : '❌'} ${result.message}` 
             });
-            
-            setTimeout(() => {
-                authTokenBtn.disabled = false;
-                authTokenBtn.textContent = 'Set Token';
-                authTokenBtn.className = 'btn btn-primary';
-            }, 3000);
         }
         
     } catch (error) {
-        authStatusText.textContent = 'Setup Error';
+        authStatusText.textContent = 'Add Error';
         authStatusText.className = 'status stopped';
         authTokenBtn.textContent = '❌ Error';
         authTokenBtn.className = 'btn btn-danger';
         
         addLogToUI({ 
             level: 'error', 
-            message: `❌ Token setup error: ${error.message}` 
+            message: `❌ Error adding token: ${error.message}` 
         });
-        
-        setTimeout(() => {
-            authTokenBtn.disabled = false;
-            authTokenBtn.textContent = 'Set Token';
-            authTokenBtn.className = 'btn btn-primary';
-        }, 3000);
     }
+    
+    // Возвращаем кнопку в исходное состояние через 3 секунды
+    setTimeout(() => {
+        authTokenBtn.disabled = false;
+        authTokenBtn.textContent = 'Add to Pool';
+        authTokenBtn.className = 'btn btn-primary';
+    }, 3000);
 }
 
 // Проверка статуса авторизации при загрузке
+// Проверка статуса авторизации (ОБНОВЛЕННАЯ)
 async function checkAuthStatus() {
     try {
-        const response = await fetch('/api/auth/status');
-        const status = await response.json();
+        // Обновляем список токенов вместо старой логики
+        await updateTokensList();
         
-        if (status.isAuthorized) {
-            authStatusText.textContent = 'Authorized';
-            authStatusText.className = 'status running';
-            
-            // Получаем токен с сервера и отображаем
-            if (status.hasToken) {
-                const tokenResponse = await fetch('/api/auth/current-token');
-                const tokenData = await tokenResponse.json();
-                if (tokenData.token) {
-                    updateTokenDisplay(tokenData.token);
-                }
+        // Проверяем есть ли токены в системе
+        const response = await fetch('/api/tokens');
+        const result = await response.json();
+        
+        if (result.success && result.data.tokens.length > 0) {
+            const authStatusText = document.getElementById('auth-status-text');
+            if (authStatusText) {
+                authStatusText.textContent = `Token Pool (${result.data.tokens.length})`;
+                authStatusText.className = 'status running';
             }
         }
         
@@ -228,6 +221,7 @@ async function checkAuthStatus() {
         console.error('Error checking auth status:', error);
     }
 }
+
 // Добавление профиля по Enter
 if (usernameInput) {
     usernameInput.addEventListener('keypress', (e) => {
@@ -534,32 +528,63 @@ function updateStats(stats) {
         totalPostsElement.textContent = stats.postsFound || 0;
     }
 }
+// Статистика Gap времени
+let gapStats = {
+    gaps: [],
+    bestGap: Infinity,
+    worstGap: 0,
+    averageGap: 0
+};
+// Обновление Gap статистики
+function updateGapStats(gapTime) {
+    console.log(`🔧 Frontend received gap: ${gapTime}ms`);
+    
+    // Игнорируем нулевые и отрицательные значения
+    if (gapTime > 0) {
+        gapStats.gaps.push(gapTime);
+    }
+    
+    // Оставляем только последние 100 измерений
+    if (gapStats.gaps.length > 100) {
+        gapStats.gaps = gapStats.gaps.slice(-100);
+    }
+    
+    // Проверяем что есть данные для расчета
+    if (gapStats.gaps.length === 0) {
+        return; // Нет данных для статистики
+    }
+    
+    // Вычисляем статистику только для положительных значений
+    gapStats.bestGap = Math.min(...gapStats.gaps);
+    gapStats.worstGap = Math.max(...gapStats.gaps);
+    gapStats.averageGap = Math.round(gapStats.gaps.reduce((a, b) => a + b, 0) / gapStats.gaps.length);
+    
+    console.log(`🔧 Gap stats: best=${gapStats.bestGap}, worst=${gapStats.worstGap}, avg=${gapStats.averageGap}`);
+    
+    // Обновляем UI
+    const bestGapElement = document.getElementById('best-gap');
+    const worstGapElement = document.getElementById('worst-gap');
+    const averageGapElement = document.getElementById('average-gap');
+    
+    if (bestGapElement) {
+        bestGapElement.textContent = `${gapStats.bestGap}ms`;
+    }
+    
+    if (worstGapElement) {
+        worstGapElement.textContent = `${gapStats.worstGap}ms`;
+    }
+    
+    if (averageGapElement) {
+        averageGapElement.textContent = `${gapStats.averageGap}ms`;
+    }
+}
 
-// Обновление API статистики
-function updateAPIStats() {
-    const requestsElement = document.getElementById('api-requests-count');
-    const successRateElement = document.getElementById('success-rate');
-    const lastCheckElement = document.getElementById('last-check-time');
-    const responseTimeElement = document.getElementById('avg-response-time');
+// Обновление количества профилей
+function updateProfilesCount(count) {
+    const profilesCountElement = document.getElementById('profiles-count');
     
-    if (requestsElement) {
-        requestsElement.textContent = apiStats.requests;
-    }
-    
-    if (successRateElement && apiStats.requests > 0) {
-        const rate = Math.round((apiStats.successCount / apiStats.requests) * 100);
-        successRateElement.textContent = `${rate}%`;
-    }
-    
-    if (lastCheckElement && apiStats.lastCheck) {
-        lastCheckElement.textContent = apiStats.lastCheck;
-    }
-    
-    if (responseTimeElement && apiStats.responseTimes.length > 0) {
-        const avgTime = Math.round(
-            apiStats.responseTimes.reduce((a, b) => a + b, 0) / apiStats.responseTimes.length
-        );
-        responseTimeElement.textContent = `${avgTime}ms`;
+    if (profilesCountElement) {
+        profilesCountElement.textContent = count;
     }
 }
 
@@ -848,7 +873,13 @@ function updateTokenDisplay(token) {
     const tokenText = document.getElementById('current-token-text');
     const copyBtn = document.getElementById('copy-token-btn');
     
-    if (token) {
+    // Проверяем существование элементов
+    if (!tokenDisplay) {
+        console.warn('Element auth-token-display not found');
+        return;
+    }
+    
+    if (token && tokenText && copyBtn) {
         tokenText.textContent = token.substring(0, 20) + '...';
         tokenDisplay.style.display = 'flex';
         
@@ -862,11 +893,115 @@ function updateTokenDisplay(token) {
     }
 }
 
+// Обновление списка токенов (С КНОПКОЙ УДАЛЕНИЯ)
+async function updateTokensList() {
+    try {
+        const response = await fetch('/api/tokens');
+        const result = await response.json();
+        
+        const tokensList = document.getElementById('tokens-list');
+        const tokenDisplay = document.getElementById('auth-token-display');
+        
+        if (result.success && result.data.tokens.length > 0) {
+            tokenDisplay.style.display = 'block';
+            
+            tokensList.innerHTML = result.data.tokens.map((tokenInfo, index) => {
+                const statusClass = tokenInfo.available ? 'available' : 'cooldown';
+                const statusText = tokenInfo.available ? 'Available' : 'Cooldown';
+                
+                return `
+                    <div class="token-item">
+                        <span class="token-text">${tokenInfo.token}</span>
+                        <span class="token-stats">Requests: ${tokenInfo.requests} | Errors: ${tokenInfo.errors}</span>
+                        <span class="token-status ${statusClass}">${statusText}</span>
+                        <button onclick="removeToken(${index})" class="btn btn-danger btn-sm">🗑️</button>
+                    </div>
+                `;
+            }).join('');
+            
+        } else {
+            tokenDisplay.style.display = 'none';
+        }
+        
+    } catch (error) {
+        console.error('Error updating tokens list:', error);
+    }
+}
+
+// Функция удаления токена
+async function removeToken(index) {
+    if (!confirm('Remove this token from pool?')) return;
+    
+    try {
+        const response = await fetch(`/api/tokens/${index}`, {
+            method: 'DELETE'
+        });
+        
+        const result = await response.json();
+        if (result.success) {
+            addLogToUI({ 
+                level: 'info', 
+                message: '🗑️ Token removed from pool' 
+            });
+            updateTokensList();
+        } else {
+            addLogToUI({ 
+                level: 'error', 
+                message: `❌ Failed to remove token: ${result.error}` 
+            });
+        }
+    } catch (error) {
+        addLogToUI({ 
+            level: 'error', 
+            message: `❌ Error removing token: ${error.message}` 
+        });
+    }
+}
+
+// Добавление нового токена
+async function addNewToken() {
+    const token = prompt('Enter new Bearer token:');
+    if (token && token.trim()) {
+        try {
+            const response = await fetch('/api/tokens/add', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ token: token.trim() })
+            });
+            
+            const result = await response.json();
+            if (result.success) {
+                addLogToUI({ 
+                    level: 'success', 
+                    message: '✅ Token added successfully' 
+                });
+                updateTokensList();
+            } else {
+                addLogToUI({ 
+                    level: 'error', 
+                    message: `❌ Failed to add token: ${result.error}` 
+                });
+            }
+        } catch (error) {
+            addLogToUI({ 
+                level: 'error', 
+                message: `❌ Error adding token: ${error.message}` 
+            });
+        }
+    }
+}
+
 // Загружаем данные при загрузке страницы
 document.addEventListener('DOMContentLoaded', () => {
     loadProfiles();
     checkAuthStatus(); // Проверяем статус авторизации
-    updateAPIStats();
+
+    
+    // Обновляем список токенов каждые 30 секунд
+    updateTokensList();
+    setInterval(updateTokensList, 30000);
     
     addLogToUI({ 
         level: 'info', 

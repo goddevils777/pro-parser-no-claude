@@ -12,8 +12,9 @@
         
         <div class="mode-banner">
             <span class="mode-icon">⚡</span>
-            <span class="mode-text">API Mode Active - Browsers Disabled</span>
-            <span class="mode-desc">Using HTTP requests instead of browser automation</span>
+            <span class="mode-text">API Mode Active</span>
+            <span class="mode-icon">⚡</span>
+            
         </div>
         
         <div class="status-panel">
@@ -42,9 +43,9 @@
     <span id="auth-status-text" class="status stopped">Not Authorized</span>
 </div>
 <div class="auth-token-display" id="auth-token-display" style="display: none;">
-    <span class="auth-label">Current Token:</span>
-    <span id="current-token-text" class="token-text"></span>
-    <button id="copy-token-btn" class="btn btn-sm btn-outline">Copy</button>
+    <span class="auth-label">Tokens Pool:</span>
+    <div id="tokens-list" class="tokens-list"></div>
+
 </div>
             
             <div class="auth-browser-controls">
@@ -66,11 +67,11 @@
                     <span class="info-icon">✅</span>
                     <span class="info-text"><strong>Step 3:</strong> Click "I'm Authorized" to extract token and close browser</span>
                 </div>
-            </div>
+            </div><br>
             
             <div class="auth-form">
-                <input type="text" id="auth-token" placeholder="Bearer token (43 characters)" maxlength="100">
-                <button id="auth-token-btn" class="btn btn-primary">Set Token</button>
+                <input type="text" id="auth-token" placeholder="Bearer token (add to pool)" maxlength="100">
+                <button id="auth-token-btn" class="btn btn-primary">Add to Pool</button>
             </div>
         </div>
 
@@ -91,49 +92,25 @@
             <div id="profiles-list" class="profiles-list"></div>
         </div>
 
-        <div class="section">
-            <h2>🔧 API Information</h2>
-            <div class="api-info">
-                <div class="info-item">
-                    <span class="info-icon">📡</span>
-                    <span class="info-text"><strong>HTTP Requests:</strong> Direct API calls to Truth Social</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-icon">⚡</span>
-                    <span class="info-text"><strong>Faster Setup:</strong> No browser dependencies or complex authorization</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-icon">🔒</span>
-                    <span class="info-text"><strong>Lightweight:</strong> Uses standard HTTP requests with User-Agent rotation</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-icon">🎯</span>
-                    <span class="info-text"><strong>Rate Limiting:</strong> Built-in request throttling to avoid blocking</span>
-                </div>
-            </div>
-        </div>
+        
 
-        <div class="section">
-            <h2>📊 API Statistics</h2>
-            <div class="stats-grid">
-                <div class="stat-item">
-                    <span class="stat-label">API Requests:</span>
-                    <span id="api-requests-count" class="stat-value">0</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Success Rate:</span>
-                    <span id="success-rate" class="stat-value">-</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Last Check:</span>
-                    <span id="last-check-time" class="stat-value">-</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Response Time:</span>
-                    <span id="avg-response-time" class="stat-value">-</span>
-                </div>
-            </div>
+<div class="section">
+    <h2>📊 Gap Statistics</h2>
+    <div class="stats-grid">
+        <div class="stat-item">
+            <span class="stat-label">Best Gap:</span>
+            <span id="best-gap" class="stat-value">-</span>
         </div>
+        <div class="stat-item">
+            <span class="stat-label">Worst Gap:</span>
+            <span id="worst-gap" class="stat-value">-</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-label">Average Gap:</span>
+            <span id="average-gap" class="stat-value">-</span>
+        </div>
+    </div>
+</div>
 
         <div class="section">
             <h2>📝 Recent Posts</h2>
