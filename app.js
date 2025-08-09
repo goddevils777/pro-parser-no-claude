@@ -41,14 +41,18 @@ function getTimeSinceLastOutput() {
     lastOutputTime = now;
     return interval;
 }
-// Функция обработки всех результатов от потоков
+
+
+// ИСПРАВЛЕНИЕ 1: Фильтр ошибок в app.js
+// Найди функцию handleNewPost и замени её на эту:
+
 function handleNewPost(postData) {
     const responseTime = postData.responseTime;
     const streamId = postData.streamId;
     const profile = postData.profile;
     const timeSinceLastOutput = getTimeSinceLastOutput();
     
-    console.log(`🔧 DEBUG: Gap time: ${timeSinceLastOutput}ms`); // ← отладочный лог
+    console.log(`🔧 DEBUG: Gap time: ${timeSinceLastOutput}ms`);
     
     // Отправляем Gap статистику в веб
     io.emit('gapUpdate', { gapTime: timeSinceLastOutput });
@@ -104,22 +108,67 @@ function handleNewPost(postData) {
             message: `✅ Stream #${streamId}: @${profile} checked (${responseTime}ms) | Gap: ${timeSinceLastOutput}ms`
         });
         
-    } else if (postData.type === 'error') {
-        // Ошибка при проверке
+    // В файле app.js найди функцию handleNewPost и замени блок обработки ошибок:
+
+} else if (postData.type === 'error') {
+    // РАСШИРЕННАЯ ФИЛЬТРАЦИЯ ОШИБОК - НЕ ПОКАЗЫВАЕМ В ИНТЕРФЕЙСЕ
+    const isNetworkError = postData.error && (
+        postData.error.includes('ETIMEDOUT') ||
+        postData.error.includes('ECONNRESET') ||
+        postData.error.includes('ENOTFOUND') ||
+        postData.error.includes('ECONNREFUSED') ||
+        postData.error.includes('connect ETIMEDOUT') ||
+        postData.error.includes('socket hang up')
+    );
+    
+    const isCloudflareError = postData.error && (
+        postData.error.includes('Cloudflare') ||
+        postData.error.includes('403') ||
+        postData.error.includes('blocked') ||
+        postData.error.includes('<!DOCTYPE html>') ||
+        postData.error.includes('Sorry, you have been blocked')
+    );
+    
+    const isProxyError = postData.error && (
+        postData.error.includes('RequestError') ||
+        postData.error.includes('User lookup failed') ||
+        postData.error.includes('timeout') ||
+        postData.error.includes('Request timeout')
+    );
+    
+    if (isNetworkError || isCloudflareError || isProxyError) {
+        // Сетевые/прокси ошибки - только в логи, НЕ в интерфейс постов
+        let logMessage = '';
+        
+        if (isNetworkError) {
+            logMessage = `🌐 Stream #${streamId}: @${profile} network timeout (${responseTime}ms) - switching IP...`;
+        } else if (isCloudflareError) {
+            logMessage = `⚠️ Stream #${streamId}: @${profile} IP blocked by Cloudflare (${responseTime}ms) - switching IP...`;
+        } else if (isProxyError) {
+            logMessage = `🔄 Stream #${streamId}: @${profile} proxy error (${responseTime}ms) - replacing connection...`;
+        }
+        
+        addLogToUI({
+            level: 'warning',
+            message: logMessage
+        });
+    } else {
+        // Другие серьезные ошибки - показываем в интерфейс
         io.emit('post', {
             author: profile,
-            content: `❌ Error: ${postData.error}`,
+            content: `❌ System Error: ${postData.error}`,
             foundAt: postData.foundAt,
             streamId: streamId,
             responseTime: responseTime,
-            source: `❌ Error - Stream #${streamId} (${responseTime}ms) | Gap: ${timeSinceLastOutput}ms`
+            source: `❌ System Error - Stream #${streamId} (${responseTime}ms) | Gap: ${timeSinceLastOutput}ms`
         });
         
         addLogToUI({
             level: 'error',
-            message: `❌ Stream #${streamId}: @${profile} error (${responseTime}ms) | Gap: ${timeSinceLastOutput}ms`
+            message: `❌ Stream #${streamId}: @${profile} system error (${responseTime}ms) | Gap: ${timeSinceLastOutput}ms`
         });
     }
+}
     
     parserStats.lastActivity = new Date().toISOString();
 }
